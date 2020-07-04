@@ -1,6 +1,7 @@
 import logging
 
-from typing import Union, Dict
+from typing import Union, Dict, Set
+from enum import Enum
 
 import sc2
 from sc2 import run_game, maps, Race, Difficulty
@@ -16,6 +17,12 @@ from sc2.position import Point2, Point3
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
+from sc2.constants import (
+    TERRAN_TECH_REQUIREMENT,
+    PROTOSS_TECH_REQUIREMENT,
+    ZERG_TECH_REQUIREMENT,
+    EQUIVALENTS_FOR_TECH_PROGRESS
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +32,20 @@ race_supplyUnit: Dict[Race, UnitTypeId] = {
     Race.Zerg: UnitTypeId.NOTAUNIT,
 }
 
+class StartLocation(Enum):
+    UNKNOWN = 1,
+    BOTTOM_LEFT = 2,
+    BOTTOM_RIGHT = 3,
+    TOP_LEFT = 4,
+    TOP_RIGHT = 5
+
 class BuildListProcessBot(sc2.BotAI):
 
     def __init__(self, inputBuildList):
         self.buildList = inputBuildList
         self.currentTask = UnitTypeId.NOTAUNIT
         self.done = False
+        self.startLocation = StartLocation.UNKNOWN
 
     def unitToId(self, unitName):
         if (unitName == "SupplyDepot"):
@@ -39,6 +54,8 @@ class BuildListProcessBot(sc2.BotAI):
             return UnitTypeId.SCV
         if (unitName == "Barracks"):
             return UnitTypeId.BARRACKS
+        if (unitName == "Marine"):
+            return UnitTypeId.MARINE
         return UnitTypeId.NOTAUNIT
 
     def checkAndAdvance(self):
@@ -58,10 +75,8 @@ class BuildListProcessBot(sc2.BotAI):
 
     # simply check if a structure exists
     def structureExists(self, structureType : UnitTypeId):
-        for structure in self.structures:
-            if structure._proto.unit_type == structureType.value:
-                return True
-        return False
+        return self.structures.filter(lambda unit: unit.is_structure).exists
+        
         
     def producedInTownhall(self, unitId):
         producers = UNIT_TRAINED_FROM[unitId]
@@ -97,16 +112,25 @@ class BuildListProcessBot(sc2.BotAI):
             if self.producedInTownhall(unitIdToProduce):
                 structuresToSearch = self.townhalls
             
-            for structure in structuresToSearch:
-                # TODO: use ready() on structures to check if any of them are completed
-                if structure.type_id in producers:
-                    if (structure.build_progress == 1.0):
-                        result = (True, True)
-                        return result
-                    else:
-                        # not available right now but later
-                        result = (False, True)   
-                        # we do not return here because we might find an instance of that building which is constructed
+            # filter all those that can built what we want to build
+            structuresToSearch = structuresToSearch.filter(lambda structure: structure.type_id in producers)
+            # filter all those that are ready
+            structuresToSearch = structuresToSearch.ready
+
+            if bool(structuresToSearch):
+                # not empty
+                # check if any of them has space in his build queue
+                if any(structure.is_idle for structure in structuresToSearch):
+                    result = (True, True)
+                else: 
+                    result = (False, True)
+            else:
+                # empty
+                # check if any of the producers is pending
+                if any(self.already_pending(producer) for producer in producers):
+                    result = (False, True)
+                else:
+                    result = (False, False)
 
         return result
 
@@ -158,10 +182,38 @@ class BuildListProcessBot(sc2.BotAI):
 
         return (minerals[0] and vespene[0] and supply[0], minerals[1] and vespene[1] and supply[1])
 
+    def checkIfTechRequirementFulfilled(self, unitId):
+        race_dict = {
+            Race.Protoss: PROTOSS_TECH_REQUIREMENT,
+            Race.Terran: TERRAN_TECH_REQUIREMENT,
+            Race.Zerg: ZERG_TECH_REQUIREMENT,
+        }
+        # this gets the requirement for the unit we are checking
+        requirement = race_dict[self.race][unitId]
+        # if there is no requirement we can just skip the remaining stuff
+        if UnitTypeId.NOTAUNIT == requirement:
+            return (True, True)
+        # 
+        requirementEquivalents = {requirement}
+        for equiv_structure in EQUIVALENTS_FOR_TECH_PROGRESS.get(requirement, []):
+            requirementEquivalents.add(equiv_structure)
 
+        correspondingStructures = self.structures.filter(lambda unit: unit.type_id in requirementEquivalents)
+
+        # any of them already existing?
+        fulfilled = bool(correspondingStructures.ready)
+            
+        # is any of these pending?
+        # if yes waiting helps
+        # waiting is also fine if it already exists
+        waitingHelps = fulfilled
+        if not fulfilled:
+            waitingHelps = self.already_pending(requirement) > 0 
+
+        return (fulfilled, waitingHelps)
 
     def checkPreconditions(self):
-        # check if the producer exists or is under construction
+        # check if the producer exists or is under construction and if the producer is idle
         producerExists, canWaitProducer = self.checkIfProducerExists(self.currentTask)
         if not producerExists and not canWaitProducer:
             raise Exception("There must be a producer for " + str(self.currentTask))
@@ -169,15 +221,14 @@ class BuildListProcessBot(sc2.BotAI):
         resourcesExist, canWaitResources = self.checkCosts(self.currentTask) 
         if not resourcesExist and not canWaitResources:
             raise Exception("There are no SCVs left who are able to harvest resources to afford " + str(self.currentTask))
-        # check if tech requirement is fullfilled
-        if self.tech_requirement_progress(self.currentTask) == 0:
-            raise Exception("The tech requirement for " + str(self.currentTask) + " is not fullfilled!")
+        # check if tech requirement is fullfilled only if the resources exist
 
-        # TODO: check if producer is idle/has free slots in queue
+        requirementFulfilled, canWaitRequirement = self.checkIfTechRequirementFulfilled(self.currentTask)
+        if not requirementFulfilled and not canWaitRequirement:
+            raise Exception("The requirement for " + str(self.currentTask) + " is not fullfilled!")
 
         # just return if we are able to build immediately --> if not that means we have to wait
-        return producerExists and resourcesExist
-
+        return producerExists and resourcesExist and requirementFulfilled
 
     async def on_step(self, iteration: int):
         
@@ -192,7 +243,18 @@ class BuildListProcessBot(sc2.BotAI):
                     workers: Units = self.workers.gathering
                     if workers:
                         worker: Unit = workers.furthest_to(workers.center)
-                        location: Point2 = await self.find_placement(self.currentTask, worker.position, max_distance = 100, placement_step=3)
+                        # Ideas:
+                        # self.game_info.map_size.width() /.height() print
+                        # --> zufälligen punkt auf der karte wählen oder map center?
+                        # grid aufspannen in dem 3x3 4x4 und so weiter jedem eine zeile zustehen 
+                        near: Point2 = self.game_info.player_start_location.offset((10, 10))
+                        if self.startLocation == StartLocation.BOTTOM_RIGHT:
+                            near: Point2 = self.game_info.player_start_location.offset((-10, 10))
+                        if self.startLocation == StartLocation.TOP_LEFT:
+                            near: Point2 = self.game_info.player_start_location.offset((10, -10))
+                        if self.startLocation == StartLocation.TOP_RIGHT:
+                            near: Point2 = self.game_info.player_start_location.offset((-10, -10))
+                        location: Point2 = await self.find_placement(self.currentTask, near=near, placement_step=3)
                         if location:
                             # Order worker to build exactly on that location
                             worker.build(self.currentTask, location)
@@ -202,14 +264,37 @@ class BuildListProcessBot(sc2.BotAI):
                         self.townhalls.idle[0].train(self.currentTask)
                         self.finishedCurrentTask()
                     else:
-                        logger.info("not implemented")
+                        unitsTrained = self.train(self.currentTask)
+                        if unitsTrained == 0:
+                            logger.info("could not train unit")
+                        else:
+                            self.finishedCurrentTask()
+
+
+    async def on_start(self):
+        logger.info(str(self.game_info.map_size))
+        logger.info(str(self.game_info.player_start_location))
+        logger.info(str(self.game_info.start_locations))
+
+        if (self.game_info.player_start_location.x == 24.5):
+            # left side of map
+            if (self.game_info.player_start_location.y == 22.5):
+                self.startLocation = StartLocation.BOTTOM_LEFT
+            else:
+                self.startLocation = StartLocation.TOP_LEFT
+        else:
+            # right side of map
+            if (self.game_info.player_start_location.y == 22.5):
+                self.startLocation = StartLocation.BOTTOM_RIGHT
+            else:
+                self.startLocation = StartLocation.TOP_RIGHT
 
 
 
-
-
-
-
+# TODO: bestimmte requirements können von diesem bot selbst erfüllt werden: bei terran zum beispiel die reaktoren und techlabs
+# TODO: special build locations für vespene und base
+# TODO: build grid
+# TODO: testing
 
 
 
@@ -217,9 +302,9 @@ class BuildListProcessBot(sc2.BotAI):
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "Barracks", "SupplyDepot"]
+buildListInput = ["SCV", "SupplyDepot", "Barracks", "Marine"]
 
 run_game(maps.get("Flat128"), [
     Bot(Race.Terran, BuildListProcessBot(buildListInput)),
-    Computer(Race.Protoss, Difficulty.Medium)
+    Computer(Race.Protoss, Difficulty.VeryEasy)
 ], realtime=True)
