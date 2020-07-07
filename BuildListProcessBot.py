@@ -1,4 +1,5 @@
 import logging
+import math
 
 from typing import Union, Dict, Set
 from enum import Enum
@@ -9,7 +10,7 @@ from sc2.player import Bot, Computer
 from sc2.units import Units
 from sc2.unit import Unit
 from sc2.dicts.unit_trained_from import UNIT_TRAINED_FROM
-from sc2.game_data import AbilityData, GameData
+from sc2.game_data import AbilityData, GameData, UnitTypeData
 from sc2.data import race_worker
 from sc2.data import race_townhalls
 from sc2.data import Race
@@ -18,10 +19,12 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.constants import (
+    IS_STRUCTURE,
     TERRAN_TECH_REQUIREMENT,
     PROTOSS_TECH_REQUIREMENT,
     ZERG_TECH_REQUIREMENT,
-    EQUIVALENTS_FOR_TECH_PROGRESS
+    EQUIVALENTS_FOR_TECH_PROGRESS,
+    ALL_GAS
 )
 
 logger = logging.getLogger(__name__)
@@ -31,6 +34,8 @@ race_supplyUnit: Dict[Race, UnitTypeId] = {
     Race.Terran: UnitTypeId.SUPPLYDEPOT,
     Race.Zerg: UnitTypeId.NOTAUNIT,
 }
+
+terranAddonBuildings = {UnitTypeId.BARRACKS, UnitTypeId.FACTORY, UnitTypeId.STARPORT}
 
 class StartLocation(Enum):
     UNKNOWN = 1,
@@ -46,6 +51,22 @@ class BuildListProcessBot(sc2.BotAI):
         self.currentTask = UnitTypeId.NOTAUNIT
         self.done = False
         self.startLocation = StartLocation.UNKNOWN
+        self.gridStart: Point2 = Point2()
+
+        # building grid
+        self.maxColLength = 32
+        # tells at which point the limit of a col in the grid is reached
+        self.colStop = Point2((0, 0))
+        self.plannedStructureSizes = dict()
+        # tells how many cols there are 
+        # also tells how many elements each of the following data structures has
+        self.numberOfCols = 0
+        # tells how wide each col is (double the building radius that can be placed in that col)
+        self.colsWidths = []
+        # tells where each col starts (Point2)
+        self.colsStarts = []
+        # tells the current build point within the cols (same as start point for now)
+        self.colsNextBuildPoint = []
 
     def unitToId(self, unitName):
         if (unitName == "SupplyDepot"):
@@ -56,6 +77,12 @@ class BuildListProcessBot(sc2.BotAI):
             return UnitTypeId.BARRACKS
         if (unitName == "Marine"):
             return UnitTypeId.MARINE
+        if (unitName == "Starport"):
+            return UnitTypeId.STARPORT
+        if (unitName == "Refinery"):
+            return UnitTypeId.REFINERY
+        if (unitName == "Factory"):
+            return UnitTypeId.FACTORY
         return UnitTypeId.NOTAUNIT
 
     def checkAndAdvance(self):
@@ -76,8 +103,7 @@ class BuildListProcessBot(sc2.BotAI):
     # simply check if a structure exists
     def structureExists(self, structureType : UnitTypeId):
         return self.structures.filter(lambda unit: unit.is_structure).exists
-        
-        
+         
     def producedInTownhall(self, unitId):
         producers = UNIT_TRAINED_FROM[unitId]
         return any(x in race_townhalls[self.race] for x in producers)
@@ -230,6 +256,60 @@ class BuildListProcessBot(sc2.BotAI):
         # just return if we are able to build immediately --> if not that means we have to wait
         return producerExists and resourcesExist and requirementFulfilled
 
+    def colHasSpaceLeft(self, index):
+        width = self.colsWidths[index]
+        spaceLeft = abs(self.colStop.y - self.colsNextBuildPoint[index].y)
+        return spaceLeft >= width
+
+    def advanceColsBuildPosition(self, index):
+        if self.startLocation == StartLocation.TOP_LEFT or self.startLocation == StartLocation.TOP_RIGHT:
+            # from top to bottom: -
+            self.colsNextBuildPoint[index] = self.colsNextBuildPoint[index].offset((0, -self.colsWidths[index]))
+        else:
+            # from bottom to top: +
+            self.colsNextBuildPoint[index] = self.colsNextBuildPoint[index].offset((0, self.colsWidths[index]))
+
+    def getNextBuildPositionAndAdvance(self, unitId):
+        unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
+        radius = unitTypeData.footprint_radius
+        
+        if unitId in terranAddonBuildings:
+            radius += 1.0
+        
+        width = radius * 2.0
+
+        for index in range(0, self.numberOfCols):
+            # dont care about row if it does not match the width of my building
+            if self.colsWidths[index] == width:
+                if self.colHasSpaceLeft(index):
+                    result = self.colsNextBuildPoint[index]
+                    self.advanceColsBuildPosition(index)
+                    return result
+
+        raise Exception("No more build slots left!")
+
+    def convertGridPositionToCenter(self, unitId: UnitTypeId, gridPosition: Point2):
+        # get radius
+        # important: only take actual size of building into account.
+        # for a factory we  will not use the adapted size with an addon attached
+        unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
+        radius = unitTypeData.footprint_radius
+        result = gridPosition
+        if self.startLocation == StartLocation.BOTTOM_LEFT:
+            result = gridPosition.offset((radius, radius))
+        elif self.startLocation == StartLocation.BOTTOM_RIGHT:
+            result = gridPosition.offset((-radius, radius))
+        elif self.startLocation == StartLocation.TOP_LEFT:
+            result = gridPosition.offset((radius, -radius))
+        elif self.startLocation == StartLocation.TOP_RIGHT:
+            result = gridPosition.offset((-radius, -radius))
+        else:
+            raise Exception("Start location does not match one of four positions!")
+    
+        return result
+
+
+
     async def on_step(self, iteration: int):
         
         # always begin with checking and possibly advancing the buildlist
@@ -243,22 +323,18 @@ class BuildListProcessBot(sc2.BotAI):
                     workers: Units = self.workers.gathering
                     if workers:
                         worker: Unit = workers.furthest_to(workers.center)
-                        # Ideas:
-                        # self.game_info.map_size.width() /.height() print
-                        # --> zufälligen punkt auf der karte wählen oder map center?
-                        # grid aufspannen in dem 3x3 4x4 und so weiter jedem eine zeile zustehen 
-                        near: Point2 = self.game_info.player_start_location.offset((10, 10))
-                        if self.startLocation == StartLocation.BOTTOM_RIGHT:
-                            near: Point2 = self.game_info.player_start_location.offset((-10, 10))
-                        if self.startLocation == StartLocation.TOP_LEFT:
-                            near: Point2 = self.game_info.player_start_location.offset((10, -10))
-                        if self.startLocation == StartLocation.TOP_RIGHT:
-                            near: Point2 = self.game_info.player_start_location.offset((-10, -10))
-                        location: Point2 = await self.find_placement(self.currentTask, near=near, placement_step=3)
-                        if location:
-                            # Order worker to build exactly on that location
-                            worker.build(self.currentTask, location)
+                        gridPosition: Point2 = self.getNextBuildPositionAndAdvance(self.currentTask)
+
+                        buildLocation: Point2 = self.convertGridPositionToCenter(self.currentTask,  gridPosition)
+
+                        if self.can_place(self.currentTask, (buildLocation)):
+
+                            worker.build(self.currentTask, buildLocation)
+
                             self.finishedCurrentTask()
+                        else:
+                            raise Exception("The provided build location is not valid!")
+
                 else:
                     if self.producedInTownhall(self.currentTask):
                         self.townhalls.idle[0].train(self.currentTask)
@@ -272,29 +348,109 @@ class BuildListProcessBot(sc2.BotAI):
 
 
     async def on_start(self):
-        logger.info(str(self.game_info.map_size))
-        logger.info(str(self.game_info.player_start_location))
-        logger.info(str(self.game_info.start_locations))
 
         if (self.game_info.player_start_location.x == 24.5):
             # left side of map
             if (self.game_info.player_start_location.y == 22.5):
                 self.startLocation = StartLocation.BOTTOM_LEFT
+                self.gridStart = self.game_info.player_start_location.offset((10, 10))
+                self.colStop = self.gridStart.offset((0, 32))
             else:
                 self.startLocation = StartLocation.TOP_LEFT
+                self.gridStart = self.game_info.player_start_location.offset((10, -10))
+                self.colStop = self.gridStart.offset((0, -32))
         else:
             # right side of map
             if (self.game_info.player_start_location.y == 22.5):
                 self.startLocation = StartLocation.BOTTOM_RIGHT
+                self.gridStart = self.game_info.player_start_location.offset((-10, 10))
+                self.colStop = self.gridStart.offset((0, 32))
             else:
                 self.startLocation = StartLocation.TOP_RIGHT
+                self.gridStart = self.game_info.player_start_location.offset((-10, -10))
+                self.colStop = self.gridStart.offset((0, -32))
+
+        logger.info("Start location: " + str(self.startLocation))
+        logger.info("Grid start: " + str(self.gridStart))
+
+        # fill self.plannedStructureSizes
+        for buildTask in self.buildList:
+            unitId: UnitTypeId = self.unitToId(buildTask)
+              
+            unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
+            # if the building is a structure we store its footprint size
+            if self.builtByWorker(unitId):
+                
+                # make sure it is not a gas bulilding and not a base building
+                if not unitId in ALL_GAS:
+                    if not unitId in race_townhalls[self.race]:
+                        radius = unitTypeData.footprint_radius
+                        # in case this is a building that might have an addon
+                        if unitId in terranAddonBuildings:
+                            # increase radius by 1 to safe space for possible addons
+                            radius += 1
+                        logger.info("Adding " + str(unitId) + " to structure sizes with radius " + str(radius))
+                        if radius in self.plannedStructureSizes:
+                            self.plannedStructureSizes[radius] += 1
+                        else:
+                            self.plannedStructureSizes[radius] = 1
+
+
+        offsetBetweenCols = Point2((1, 0))
+        if self.startLocation == StartLocation.BOTTOM_RIGHT:
+            offsetBetweenCols = Point2((-1, 0))
+        if self.startLocation == StartLocation.TOP_LEFT:
+            offsetBetweenCols = Point2((1, 0))
+        if self.startLocation == StartLocation.TOP_RIGHT:
+            offsetBetweenCols = Point2((-1, 0))
+
+        # iteration variables
+        currentColStart = self.gridStart
+
+        for radius, count in self.plannedStructureSizes.items():
+            
+            # compute how many cols are necessary
+            buildingsPerCol = self.maxColLength // (radius * 2) 
+            colsNecessary = math.ceil(count / buildingsPerCol)
+
+            self.numberOfCols += colsNecessary
+
+            self.colsWidths.append(radius * 2)
+
+            self.colsStarts.append(Point2(currentColStart))
+
+            # needs a copy
+            self.colsNextBuildPoint.append(Point2(currentColStart))
+            
+
+            # offset given by width of building
+            if self.startLocation == StartLocation.BOTTOM_LEFT or self.startLocation == StartLocation.TOP_LEFT:
+                currentColStart = currentColStart.offset((radius*2, 0))
+            else:
+                currentColStart = currentColStart.offset((radius * (-2), 0))
+            # extra offset to have some space in between cols
+            currentColStart = currentColStart.offset(offsetBetweenCols)
+
+
+        logger.info("Finished grid stuff!")
+        logger.info("Number of cols: " + str(self.numberOfCols))
+        logger.info("Cols widths: " + str(self.colsWidths))
+        logger.info("colsStarts: " + str(self.colsStarts))
+        logger.info("cols next build points: " + str(self.colsNextBuildPoint))
+
+
+            
+        
+        
 
 
 
-# TODO: bestimmte requirements können von diesem bot selbst erfüllt werden: bei terran zum beispiel die reaktoren und techlabs
+
+
+
 # TODO: special build locations für vespene und base
-# TODO: build grid
-# TODO: testing
+# TODO: redistribute workers
+# TODO: turn if in unitToId to dict lookup
 
 
 
@@ -302,7 +458,7 @@ class BuildListProcessBot(sc2.BotAI):
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "SupplyDepot", "Barracks", "Marine"]
+buildListInput = ["SCV", "SupplyDepot", "Barracks", "Barracks", "SupplyDepot", "SupplyDepot", "Factory", "Barracks"]
 
 run_game(maps.get("Flat128"), [
     Bot(Race.Terran, BuildListProcessBot(buildListInput)),
