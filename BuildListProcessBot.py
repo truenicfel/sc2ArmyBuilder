@@ -13,6 +13,7 @@ from sc2.dicts.unit_trained_from import UNIT_TRAINED_FROM
 from sc2.game_data import AbilityData, GameData, UnitTypeData
 from sc2.data import race_worker
 from sc2.data import race_townhalls
+from sc2.data import race_gas
 from sc2.data import Race
 from sc2.position import Point2, Point3
 from sc2.ids.ability_id import AbilityId
@@ -44,14 +45,20 @@ class StartLocation(Enum):
     TOP_LEFT = 4,
     TOP_RIGHT = 5
 
+class Player(Enum):
+    PLAYER_ONE = 1,
+    PLAYER_TWO = 2
+
+
 class BuildListProcessBot(sc2.BotAI):
 
-    def __init__(self, inputBuildList):
+    def __init__(self, inputBuildList, player: Player):
         self.buildList = inputBuildList
         self.currentTask = UnitTypeId.NOTAUNIT
         self.done = False
         self.startLocation = StartLocation.UNKNOWN
         self.gridStart: Point2 = Point2()
+        
 
         # building grid
         self.maxColLength = 32
@@ -68,6 +75,20 @@ class BuildListProcessBot(sc2.BotAI):
         # tells the current build point within the cols (same as start point for now)
         self.colsNextBuildPoint = []
 
+        # expansion stuff
+        self.player: Player = player
+        self.expansionLocationsComputed = False
+        self.bottomExpansions = list()
+        self.topExpansions = list()
+        self.leftExpansions = list()
+        self.rightExpansions = list()
+
+        self.expansionLocations = list()
+
+        BuildListProcessBot.PLAYER_ONE_START_LOCATION: StartLocation = StartLocation.UNKNOWN
+        BuildListProcessBot.PLAYER_TWO_START_LOCATION: StartLocation = StartLocation.UNKNOWN
+
+
     def unitToId(self, unitName):
         if (unitName == "SupplyDepot"):
             return UnitTypeId.SUPPLYDEPOT
@@ -83,6 +104,8 @@ class BuildListProcessBot(sc2.BotAI):
             return UnitTypeId.REFINERY
         if (unitName == "Factory"):
             return UnitTypeId.FACTORY
+        if (unitName == "CommandCenter"):
+            return UnitTypeId.COMMANDCENTER
         return UnitTypeId.NOTAUNIT
 
     def checkAndAdvance(self):
@@ -172,26 +195,22 @@ class BuildListProcessBot(sc2.BotAI):
         minerals = (True, True)
         if cost.minerals > self.minerals:
             # not enough right now but maybe later?
-            minerals = (False, True)
-            # check if there are workers gathering minerals
-            countMineralHarvestingWorkers = 0
-            for townhall in self.townhalls:
-                countMineralHarvestingWorkers += townhall.assigned_harvesters
-            if countMineralHarvestingWorkers == 0:
+            # at least some workers and
+            if len(self.workers) > 10 and len(self.townhalls) > 0:
+                minerals = (False, True)
+            else:
                 minerals = (False, False)
-                logger.warn("There are not enough minerals to build: " + str(item_id))
+                logger.warn("There are not enough minerals to build " + str(item_id) + " and waiting does not help!")
         
         vespene = (True, True)
         if cost.vespene > self.vespene:
             # not enough right now but maybe later?
-            vespene = (False, True)
-            # check if there are workers harvesting vespene
-            countVespeneHarvestingWorkers = 0
-            for townhall in self.townhalls:
-                countVespeneHarvestingWorkers += townhall.assigned_harvesters
-            if countVespeneHarvestingWorkers == 0:
+            if len(self.workers) > 10 and len(self.gas_buildings.ready) + self.already_pending(race_gas[self.race]):
+                # waiting helps
+                vespene = (False, True)
+            else:
                 vespene = (False, False)
-                logger.warn("There is not enough vespene to build: " + str(item_id))
+                logger.warn("There is not enough vespene to build " + str(item_id) + " and waiting does not help!")
 
         supply = (True, True)
         supply_cost = self.calculate_supply_cost(item_id)
@@ -308,24 +327,491 @@ class BuildListProcessBot(sc2.BotAI):
     
         return result
 
+    # finds an appropriate worker (closest to position or unit)
+    def getWorker(self, position: Union[Unit, Point2, Point3]):
+        workersGathering: Units = self.workers.gathering
 
+        if workersGathering:
+            # select worker closest to pos or unit
+            return workersGathering.closest_to(position)
+        else:
+            raise Exception("There are no gathering workers which could be used to build " + self.currentTask)
+
+    def buildRefinery(self):
+        # cant build more gas buildings than townhalls
+        # TODO: evaluate this condition
+        if len(self.gas_buildings.ready) + self.already_pending(self.currentTask) < len(self.townhalls) * 2:
+            
+            # prefer townhalls that are ready
+            for townhall in self.townhalls.ready:
+                # all vespene geysers closer than distance ten to the current townhall
+                vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
+                logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
+                # check all locations
+                for vespeneGeyser in vespeneGeysers:
+                    if self.can_place(self.currentTask, (vespeneGeyser.position)):
+                        worker: Unit = self.getWorker(vespeneGeyser)
+                        worker.build_gas(vespeneGeyser)
+                        return True
+            # townhalls that are not ready
+            for townhall in self.townhalls.not_ready:
+                # all vespene geysers closer than distance ten to the current townhall
+                vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
+                logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
+                # check all locations
+                for vespeneGeyser in vespeneGeysers:
+                    if self.can_place(self.currentTask, (vespeneGeyser.position)):
+                        worker: Unit = self.getWorker(vespeneGeyser)
+                        worker.build_gas(vespeneGeyser)
+                        return True
+
+        else:
+            raise Exception("Per townhall 2 vespene buildings allowed!")
+
+    def buildBase(self):
+        if bool(self.expansionLocations):
+            location: Point2 = self.expansionLocations.pop(0)
+            worker: Unit = self.workers.gathering.closest_to(location)
+            if self.can_place(self.currentTask, location):
+                worker.build(self.currentTask, location)
+            else:
+                raise Exception("could not build the command center where it was supposed to be built!")
+        else:
+            raise Exception("No more places to build command expansions!")
+
+    def myWorkerDistribution(self):
+
+        # Shamelessly stolen from: https://github.com/BurnySc2/python-sc2/blob/develop/examples/terran/mass_reaper.py
+        # ---------------------------------------------
+
+        mineralTags = [x.tag for x in self.mineral_field]
+        gas_buildingTags = [x.tag for x in self.gas_buildings]
+
+        workerPool = Units([], self)
+        workerPoolTags = set()
+
+        # # Find all gas_buildings that have surplus or deficit
+        deficit_gas_buildings = {}
+        surplusgas_buildings = {}
+        for g in self.gas_buildings.filter(lambda x: x.vespene_contents > 0):
+            # Only loop over gas_buildings that have still gas in them
+            deficit = g.ideal_harvesters - g.assigned_harvesters
+            if deficit > 0:
+                deficit_gas_buildings[g.tag] = {"unit": g, "deficit": deficit}
+            elif deficit < 0:
+                surplusWorkers = self.workers.closer_than(10, g).filter(
+                    lambda w: w not in workerPoolTags
+                    and len(w.orders) == 1
+                    and w.orders[0].ability.id in [AbilityId.HARVEST_GATHER]
+                    and w.orders[0].target in gas_buildingTags
+                )
+                for i in range(-deficit):
+                    if surplusWorkers.amount > 0:
+                        w = surplusWorkers.pop()
+                        workerPool.append(w)
+                        workerPoolTags.add(w.tag)
+                surplusgas_buildings[g.tag] = {"unit": g, "deficit": deficit}
+
+        # # Find all townhalls that have surplus or deficit
+        deficitTownhalls = {}
+        surplusTownhalls = {}
+        for th in self.townhalls:
+            deficit = th.ideal_harvesters - th.assigned_harvesters
+            if deficit > 0:
+                deficitTownhalls[th.tag] = {"unit": th, "deficit": deficit}
+            elif deficit < 0:
+                surplusWorkers = self.workers.closer_than(10, th).filter(
+                    lambda w: w.tag not in workerPoolTags
+                    and len(w.orders) == 1
+                    and w.orders[0].ability.id in [AbilityId.HARVEST_GATHER]
+                    and w.orders[0].target in mineralTags
+                )
+                # workerPool.extend(surplusWorkers)
+                for i in range(-deficit):
+                    if surplusWorkers.amount > 0:
+                        w = surplusWorkers.pop()
+                        workerPool.append(w)
+                        workerPoolTags.add(w.tag)
+                surplusTownhalls[th.tag] = {"unit": th, "deficit": deficit}
+        
+        # ---------------------------------------------
+
+        # We now know which building has a deficit and which one has a surplus. If a building has a surplus
+        # the workers are added to the worker pool. Whenever we have anything in the worker pool we want to
+        # distribute those first.
+
+        if bool(workerPool):
+
+            # iterate deficit townhalls
+            for townhallTag, info in deficitTownhalls.items():
+                # get the minerals close to the current townhall
+                mineralFields: Units = self.mineral_field.closer_than(10, info["unit"])
+                # if there are any
+                if mineralFields:
+                    # get the deficit (missing worker to optimal performance)
+                    deficit = info["deficit"]
+                    # check if the worker pool does contain anything
+                    workersLeft = bool(workerPool)
+                    # if there is a deficit move one worker to the townhall from the worker pool
+                    if deficit > 0 and workersLeft:
+                        worker: Unit = workerPool.pop()
+                        mineralField: Unit = mineralFields.closest_to(worker)
+                        logger.info("Moving one worker to harvest minerals at " + str(info["unit"]))
+                        if len(worker.orders) == 1 and worker.orders[0].ability.id in [AbilityId.HARVEST_RETURN]:
+                            worker.gather(mineralField, queue=True)
+                        else:
+                            worker.gather(mineralField)
+            # iterate deficit gas buildings
+            for gasTag, info in deficit_gas_buildings.items():
+                # get the deficit (missing worker to optimal performance)
+                deficit = info["deficit"]
+                # check if the worker pool does contain anything
+                workersLeft = bool(workerPool)
+                # if there is a deficit move one worker to the townhall from the worker pool
+                if deficit > 0 and workersLeft:
+                    worker: Unit = workerPool.pop()
+                    logger.info("Moving one worker to harvest gas at " + str(info["unit"]))
+                    if len(worker.orders) == 1 and worker.orders[0].ability.id in [AbilityId.HARVEST_RETURN]:
+                        worker.gather(info["unit"], queue=True)
+                    else:
+                        worker.gather(info["unit"])
+        else:
+            # Whenever we do not have worker in the worker pool we want to move some workers to harvest gas but only if a certain ratio between
+            # total vespene workers and total mineral workers is not exceeded.
+
+            totalMineralWorkers = 0
+            totalVespeneWorkers = 0
+
+            for townhall in self.townhalls.ready:
+                totalMineralWorkers += townhall.assigned_harvesters
+            for gasBuilding in self.gas_buildings.ready:
+                totalVespeneWorkers += gasBuilding.assigned_harvesters
+
+            # only if less than 33% workers are on vespene
+            if (totalVespeneWorkers / (totalMineralWorkers + totalVespeneWorkers)) < 0.34:
+                for gasTag, info in deficit_gas_buildings.items():
+                    worker: Unit = self.workers.gathering.closest_to(info["unit"].position)
+                    logger.info("Moving one worker to " + str(info["unit"]))
+                    if len(worker.orders) == 1 and worker.orders[0].ability.id in [AbilityId.HARVEST_RETURN]:
+                        worker.gather(info["unit"], queue=True)
+                    else:
+                        worker.gather(info["unit"])
+        
+        # redistribute idle workers
+        if len(self.workers.idle) > 0:
+            if self.townhalls:
+                for worker in self.workers.idle:
+                    townhall: Unit = self.townhalls.closest_to(worker)
+                    mineralFields: Units = self.mineral_field.closer_than(10, townhall)
+                    if mineralFields:
+                        mineralField: Unit = mineralFields.closest_to(worker)
+                        worker.gather(mineralField)
+
+        
+
+        # logger.info("Worker pool:")
+        # logger.info(str(workerPool))
+
+        # logger.info("deficit townhalls:")
+        # logger.info(str(deficitTownhalls))
+
+        # logger.info("deficit gas:")
+        # logger.info(str(deficit_gas_buildings))
+
+        # logger.info("surplus townhalls:")
+        # logger.info(str(surplusTownhalls))
+
+        # logger.info("surplus gas:")
+        # logger.info(str(surplusgas_buildings))
+
+    def getCorrespondingStartLocation(self, point: Point2):
+        if (point[0] == 24.5):
+            # left side of map
+            if (point[1] == 22.5):
+                return StartLocation.BOTTOM_LEFT
+            else:
+                return StartLocation.TOP_LEFT
+        else:
+            # right side of map
+            if (point[1] == 22.5):
+                return StartLocation.BOTTOM_RIGHT
+            else:
+                return StartLocation.TOP_RIGHT
+    
+    def getLocationFromStartLocation(self, startLocation: StartLocation):
+        if startLocation == StartLocation.BOTTOM_LEFT:
+            return Point2((24.5, 22.5))
+        if startLocation == StartLocation.BOTTOM_RIGHT:
+            return Point2((127.5, 22.5))
+        if startLocation == StartLocation.TOP_RIGHT:
+            return Point2((127.5, 125.5))
+        if startLocation == StartLocation.TOP_LEFT:
+            return Point2((24.5, 125.5))
+        raise Exception("Location is not a start location! " + str(startLocation))
+        
+    def findNextExpansion(self, current: Point2, ccwDirection: bool):
+        # first need to check if current is one of the start locations
+        # "corners of map"
+        if current in self.game_info.start_locations + [self.game_info.player_start_location]:
+            correspondingStartLocation = self.getCorrespondingStartLocation(current)
+            if (correspondingStartLocation == StartLocation.UNKNOWN):
+                raise Exception("Could not find start location for " + str(current))
+            if ccwDirection:
+                if correspondingStartLocation == StartLocation.BOTTOM_LEFT:
+                    return self.bottomExpansions[1] # they are sorted from low to high x so this is fine
+                if correspondingStartLocation == StartLocation.BOTTOM_RIGHT:
+                    return self.rightExpansions[1]
+                if correspondingStartLocation == StartLocation.TOP_RIGHT:
+                    return self.topExpansions[len(self.topExpansions) - 2]
+                if correspondingStartLocation == StartLocation.TOP_LEFT:
+                    return self.leftExpansions[len(self.leftExpansions) - 2]
+            else:
+                # cw direction
+                if correspondingStartLocation == StartLocation.BOTTOM_LEFT:
+                    return self.leftExpansions[1]
+                if correspondingStartLocation == StartLocation.BOTTOM_RIGHT:
+                    return self.bottomExpansions[len(self.bottomExpansions) - 2]
+                if correspondingStartLocation == StartLocation.TOP_RIGHT:
+                    return self.rightExpansions[len(self.rightExpansions) - 2]
+                if correspondingStartLocation == StartLocation.TOP_LEFT:
+                    return self.topExpansions[1]
+        else:
+            # not in one of the corners
+            if current in self.bottomExpansions:
+                index = self.bottomExpansions.index(current)
+                if ccwDirection:
+                    # go right
+                    return self.bottomExpansions[index+1]
+                else:
+                    # go left
+                    return self.bottomExpansions[index-1]
+            if current in self.rightExpansions:
+                index = self.rightExpansions.index(current)
+                if ccwDirection:
+                    return self.rightExpansions[index+1]
+                else:
+                    return self.rightExpansions[index-1]
+            if current in self.topExpansions:
+                index = self.topExpansions.index(current)
+                if ccwDirection:
+                    return self.topExpansions[index-1]
+                else:
+                    return self.topExpansions[index+1]
+            if current in self.leftExpansions:
+                index = self.leftExpansions.index(current)
+                if ccwDirection:
+                    return self.leftExpansions[index-1]
+                else:
+                    return self.leftExpansions[index+1]
+        
+    def computeExpansionLocations(self):
+        possibleExpansionLocations = set()
+
+        # add all expansions including player start locations to the set
+        for expansionLocation in self.expansion_locations_list:
+            possibleExpansionLocations.add(expansionLocation)
+
+        for expansionLocation in possibleExpansionLocations:
+            # the bottom row of expansions is roughly at 22.5
+            # use a threshhold to ensure every single one is in
+            if abs(expansionLocation[1] - 22.5) < 2.0: 
+                self.bottomExpansions.append(expansionLocation)
+        self.bottomExpansions.sort(key=lambda x: x[0])
+
+        for expansionLocation in possibleExpansionLocations:
+            # the top row of expansions is roughly at 125.5
+            # use a threshhold to ensure every single one is in
+            if abs(expansionLocation[1] - 125.5) < 2.0: 
+                self.topExpansions.append(expansionLocation)
+        self.topExpansions.sort(key=lambda x: x[0])
+
+        for expansionLocation in possibleExpansionLocations:
+            # the left column of expansions is roughly at 24.5
+            # use a threshhold to ensure every single one is in
+            if abs(expansionLocation[0] - 24.5) < 2.0: 
+                self.leftExpansions.append(expansionLocation)
+        self.leftExpansions.sort(key=lambda x: x[1])
+
+        for expansionLocation in possibleExpansionLocations:
+            # the right column of expansions is roughly at 24.5
+            # use a threshhold to ensure every single one is in
+            if abs(expansionLocation[0] - 127.5) < 2.0: 
+                self.rightExpansions.append(expansionLocation)
+        self.rightExpansions.sort(key=lambda x: x[1])
+
+        # there is always two directions in which we could go to find expansions:
+        # in ccw and in cw direction
+        # we always prefer ccw direction but alternate between the two to stay close to our main
+
+        # my side:
+        # --------------------
+
+        playerOnePreferredExpansionCCWDirection = list()
+        playerOnePreferredExpansionCWDirection = list()
+
+        currentCCW: Point2 = self.getLocationFromStartLocation(BuildListProcessBot.PLAYER_ONE_START_LOCATION)
+        currentCW: Point2 = currentCCW
+
+        currentCCW = self.findNextExpansion(currentCCW, True)
+        currentCW = self.findNextExpansion(currentCW, False)
+
+        while currentCW != currentCCW:
+            # store
+            playerOnePreferredExpansionCCWDirection.append(currentCCW)
+            playerOnePreferredExpansionCWDirection.append(currentCW)
+            # advance
+            currentCCW = self.findNextExpansion(currentCCW, True)
+            currentCW = self.findNextExpansion(currentCW, False)
+        
+        # append one last time
+        playerOnePreferredExpansionCCWDirection.append(currentCCW)
+        playerOnePreferredExpansionCWDirection.append(currentCW)
+
+        # opponents side side:
+        # --------------------
+
+        playerTwoPreferredExpansionCCWDirection = list()
+        playerTwoPreferredExpansionCWDirection = list()
+
+        currentCCW: Point2 = self.getLocationFromStartLocation(BuildListProcessBot.PLAYER_TWO_START_LOCATION)
+        currentCW: Point2 = currentCCW
+
+        currentCCW = self.findNextExpansion(currentCCW, True)
+        currentCW = self.findNextExpansion(currentCW, False)
+
+        while currentCW != currentCCW:
+            # store
+            playerTwoPreferredExpansionCCWDirection.append(currentCCW)
+            playerTwoPreferredExpansionCWDirection.append(currentCW)
+            # advance
+            currentCCW = self.findNextExpansion(currentCCW, True)
+            currentCW = self.findNextExpansion(currentCW, False)
+        
+        # append one last time
+        playerTwoPreferredExpansionCCWDirection.append(currentCCW)
+        playerTwoPreferredExpansionCWDirection.append(currentCW)
+
+        # now of both players the preferences of expansions in both possible directions are known
+        
+        # remove both start locations from possibleExpansionLocations
+        possibleExpansionLocations.remove(self.getLocationFromStartLocation(BuildListProcessBot.PLAYER_ONE_START_LOCATION))
+        possibleExpansionLocations.remove(self.getLocationFromStartLocation(BuildListProcessBot.PLAYER_TWO_START_LOCATION))
+
+        playerOneExpansionLocations = list()
+        playerTwoExpansionLocations = list()
+
+        # ccw direction is always taken first
+        ccwRoundPlayerOne = True
+        ccwRoundPlayerTwo = True
+        while bool(possibleExpansionLocations):
+            # player one goes first
+            if ccwRoundPlayerOne:  
+                playerOneSelectedExpansion = playerOnePreferredExpansionCCWDirection.pop(0)
+                if playerOneSelectedExpansion in possibleExpansionLocations:
+                    playerOneExpansionLocations.append(playerOneSelectedExpansion)
+                    possibleExpansionLocations.remove(playerOneSelectedExpansion)
+                    ccwRoundPlayerOne = False
+                else:
+                    playerOneSelectedExpansion = playerOnePreferredExpansionCWDirection.pop(0)
+                    if playerOneSelectedExpansion in possibleExpansionLocations:
+                        playerOneExpansionLocations.append(playerOneSelectedExpansion)
+                        possibleExpansionLocations.remove(playerOneSelectedExpansion)
+                        ccwRoundPlayerOne = True
+                    else:
+                        raise Exception("There are no expansion locations left for player one even though there is still locations available!")
+            else:
+                playerOneSelectedExpansion = playerOnePreferredExpansionCWDirection.pop(0)
+                if playerOneSelectedExpansion in possibleExpansionLocations:
+                    playerOneExpansionLocations.append(playerOneSelectedExpansion)
+                    possibleExpansionLocations.remove(playerOneSelectedExpansion)
+                    ccwRoundPlayerOne = True
+                else:
+                    playerOneSelectedExpansion = playerOnePreferredExpansionCCWDirection.pop(0)
+                    if playerOneSelectedExpansion in possibleExpansionLocations:
+                        playerOneExpansionLocations.append(playerOneSelectedExpansion)
+                        possibleExpansionLocations.remove(playerOneSelectedExpansion)
+                        ccwRoundPlayerOne = False
+                    else:
+                        raise Exception("There are no expansion locations left for player one even though there is still locations available!")
+            # player two goes second
+            if ccwRoundPlayerTwo:
+                playerTwoSelectedExpansion = playerTwoPreferredExpansionCCWDirection.pop(0)
+                if playerTwoSelectedExpansion in possibleExpansionLocations:
+                    playerTwoExpansionLocations.append(playerTwoSelectedExpansion)
+                    possibleExpansionLocations.remove(playerTwoSelectedExpansion)
+                    ccwRoundPlayerTwo = False
+                else:
+                    playerTwoSelectedExpansion = playerTwoPreferredExpansionCWDirection.pop(0)
+                    if playerTwoSelectedExpansion in possibleExpansionLocations:
+                        playerTwoExpansionLocations.append(playerTwoSelectedExpansion)
+                        possibleExpansionLocations.remove(playerTwoSelectedExpansion)
+                        ccwRoundPlayerTwo = True
+                    else:
+                        raise Exception("There are no expansion locations left for player one even though there is still locations available!")
+            else:
+                playerTwoSelectedExpansion = playerTwoPreferredExpansionCWDirection.pop(0)
+                if playerTwoSelectedExpansion in possibleExpansionLocations:
+                    playerTwoExpansionLocations.append(playerTwoSelectedExpansion)
+                    possibleExpansionLocations.remove(playerTwoSelectedExpansion)
+                    ccwRoundPlayerTwo = False
+                else:
+                    playerTwoSelectedExpansion = playerTwoPreferredExpansionCCWDirection.pop(0)
+                    if playerTwoSelectedExpansion in possibleExpansionLocations:
+                        playerTwoExpansionLocations.append(playerTwoSelectedExpansion)
+                        possibleExpansionLocations.remove(playerTwoSelectedExpansion)
+                        ccwRoundPlayerTwo = True
+                    else:
+                        raise Exception("There are no expansion locations left for player one even though there is still locations available!")
+
+        
+        
+        
+
+        if self.player == Player.PLAYER_ONE:
+            self.expansionLocations = playerOneExpansionLocations
+            logger.info("Player one expansion locations: " + str(playerOneExpansionLocations))
+        else: 
+            self.expansionLocations = playerTwoExpansionLocations  
+            logger.info("Player two expansion locations: " + str(playerTwoExpansionLocations))      
+
+        return
 
     async def on_step(self, iteration: int):
+        if not self.expansionLocationsComputed:
+            if self.player == Player.PLAYER_ONE:
+                if BuildListProcessBot.PLAYER_TWO_START_LOCATION != StartLocation.UNKNOWN:
+                    self.computeExpansionLocations()
+                    self.expansionLocationsComputed = True
+            else:
+                if BuildListProcessBot.PLAYER_ONE_START_LOCATION != StartLocation.UNKNOWN:
+                    self.computeExpansionLocations()
+                    self.expansionLocationsComputed = True
         
         # always begin with checking and possibly advancing the buildlist
         self.checkAndAdvance()
+
         if not self.done:
+
             # next preconditions of the current task are checked
             ok = self.checkPreconditions()
             if ok:
                 #built by worker or trained in building?
                 if self.builtByWorker(self.currentTask):
-                    workers: Units = self.workers.gathering
-                    if workers:
-                        worker: Unit = workers.furthest_to(workers.center)
+
+                    if self.currentTask == UnitTypeId.REFINERY: 
+                        result = self.buildRefinery()
+                        if result:
+                            self.finishedCurrentTask()
+                        else:
+                            raise Exception("Could not build gas building because there was no build location found!")
+                    elif self.currentTask == UnitTypeId.COMMANDCENTER:
+                        self.buildBase()
+                    else:
                         gridPosition: Point2 = self.getNextBuildPositionAndAdvance(self.currentTask)
 
                         buildLocation: Point2 = self.convertGridPositionToCenter(self.currentTask,  gridPosition)
+
+                        worker: Unit = self.getWorker(buildLocation)
 
                         if self.can_place(self.currentTask, (buildLocation)):
 
@@ -346,7 +832,10 @@ class BuildListProcessBot(sc2.BotAI):
                         else:
                             self.finishedCurrentTask()
 
-
+            self.myWorkerDistribution()
+        else:
+            logger.info("Done with build list!")
+            
     async def on_start(self):
 
         if (self.game_info.player_start_location.x == 24.5):
@@ -370,8 +859,13 @@ class BuildListProcessBot(sc2.BotAI):
                 self.gridStart = self.game_info.player_start_location.offset((-10, -10))
                 self.colStop = self.gridStart.offset((0, -32))
 
-        logger.info("Start location: " + str(self.startLocation))
+        logger.info("Start location: " + str(self.startLocation) + str(self.game_info.player_start_location))
         logger.info("Grid start: " + str(self.gridStart))
+
+        if self.player == Player.PLAYER_ONE:
+            BuildListProcessBot.PLAYER_ONE_START_LOCATION = self.startLocation
+        else: 
+            BuildListProcessBot.PLAYER_TWO_START_LOCATION = self.startLocation
 
         # fill self.plannedStructureSizes
         for buildTask in self.buildList:
@@ -439,6 +933,8 @@ class BuildListProcessBot(sc2.BotAI):
         logger.info("cols next build points: " + str(self.colsNextBuildPoint))
 
 
+
+        
             
         
         
@@ -448,8 +944,7 @@ class BuildListProcessBot(sc2.BotAI):
 
 
 
-# TODO: special build locations für vespene und base
-# TODO: redistribute workers
+# TODO: special build locations for base
 # TODO: turn if in unitToId to dict lookup
 
 
@@ -458,9 +953,9 @@ class BuildListProcessBot(sc2.BotAI):
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "SupplyDepot", "Barracks", "Barracks", "SupplyDepot", "SupplyDepot", "Factory", "Barracks"]
+buildListInput = ["CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter"]
 
 run_game(maps.get("Flat128"), [
-    Bot(Race.Terran, BuildListProcessBot(buildListInput)),
-    Computer(Race.Protoss, Difficulty.VeryEasy)
+    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_ONE), name="PlayerOne"),
+    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
 ], realtime=True)
