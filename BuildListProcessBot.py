@@ -106,6 +106,8 @@ class BuildListProcessBot(sc2.BotAI):
             return UnitTypeId.FACTORY
         if (unitName == "CommandCenter"):
             return UnitTypeId.COMMANDCENTER
+        if (unitName == "Medivac"):
+            return UnitTypeId.MEDIVAC
         return UnitTypeId.NOTAUNIT
 
     def checkAndAdvance(self):
@@ -806,6 +808,7 @@ class BuildListProcessBot(sc2.BotAI):
                             raise Exception("Could not build gas building because there was no build location found!")
                     elif self.currentTask == UnitTypeId.COMMANDCENTER:
                         self.buildBase()
+                        self.finishedCurrentTask()
                     else:
                         gridPosition: Point2 = self.getNextBuildPositionAndAdvance(self.currentTask)
 
@@ -870,7 +873,7 @@ class BuildListProcessBot(sc2.BotAI):
         # fill self.plannedStructureSizes
         for buildTask in self.buildList:
             unitId: UnitTypeId = self.unitToId(buildTask)
-              
+            logger.info("unitid:" + str(unitId) +  " name: "+ str(buildTask))
             unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
             # if the building is a structure we store its footprint size
             if self.builtByWorker(unitId):
@@ -944,7 +947,7 @@ class BuildListProcessBot(sc2.BotAI):
 
 
 
-# TODO: special build locations for base
+# TODO: Starport, Factory und Barracks müssen im Grid noch richtig positioniert werden
 # TODO: turn if in unitToId to dict lookup
 
 
@@ -953,7 +956,7 @@ class BuildListProcessBot(sc2.BotAI):
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter", "CommandCenter"]
+buildListInput = ["SCV", "SupplyDepot", "SCV", "SupplyDepot", "Refinery","SCV", "Barracks", "SCV", "Factory", "SCV", "SCV", "Barracks", "CommandCenter", "Starport", "Marine", "Marine", "Marine", "Marine", "Medivac"]
 
 run_game(maps.get("Flat128"), [
     Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_ONE), name="PlayerOne"),
