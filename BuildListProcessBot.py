@@ -28,6 +28,11 @@ from sc2.constants import (
     ALL_GAS
 )
 
+from BuildListProcessorDicts import (
+    BASE_BUILDINGS,
+    CONVERT_TO_ID
+)
+
 logger = logging.getLogger(__name__)
 
 race_supplyUnit: Dict[Race, UnitTypeId] = {
@@ -37,6 +42,7 @@ race_supplyUnit: Dict[Race, UnitTypeId] = {
 }
 
 terranAddonBuildings = {UnitTypeId.BARRACKS, UnitTypeId.FACTORY, UnitTypeId.STARPORT}
+terranFullAddonBuildings = {UnitTypeId.BARRACKSREACTOR, UnitTypeId.BARRACKSTECHLAB, UnitTypeId.FACTORYREACTOR, UnitTypeId.FACTORYTECHLAB, UnitTypeId.STARPORTREACTOR, UnitTypeId.STARPORTTECHLAB}
 
 class StartLocation(Enum):
     UNKNOWN = 1,
@@ -90,25 +96,15 @@ class BuildListProcessBot(sc2.BotAI):
 
 
     def unitToId(self, unitName):
-        if (unitName == "SupplyDepot"):
-            return UnitTypeId.SUPPLYDEPOT
-        if (unitName == "SCV"):
-            return UnitTypeId.SCV
-        if (unitName == "Barracks"):
-            return UnitTypeId.BARRACKS
-        if (unitName == "Marine"):
-            return UnitTypeId.MARINE
-        if (unitName == "Starport"):
-            return UnitTypeId.STARPORT
-        if (unitName == "Refinery"):
-            return UnitTypeId.REFINERY
-        if (unitName == "Factory"):
-            return UnitTypeId.FACTORY
-        if (unitName == "CommandCenter"):
-            return UnitTypeId.COMMANDCENTER
-        if (unitName == "Medivac"):
-            return UnitTypeId.MEDIVAC
-        return UnitTypeId.NOTAUNIT
+        return CONVERT_TO_ID[unitName]
+
+    def getProducers(self, unitId):
+        if unitId in UNIT_TRAINED_FROM:
+            return UNIT_TRAINED_FROM[unitId]
+        elif unitId in BASE_BUILDINGS:
+            return BASE_BUILDINGS[unitId]
+        else:
+            raise Exception("Cannot get producer of " + str(unitId))
 
     def checkAndAdvance(self):
         if not self.done:
@@ -130,22 +126,34 @@ class BuildListProcessBot(sc2.BotAI):
         return self.structures.filter(lambda unit: unit.is_structure).exists
          
     def producedInTownhall(self, unitId):
-        producers = UNIT_TRAINED_FROM[unitId]
-        return any(x in race_townhalls[self.race] for x in producers)
+        if unitId in UNIT_TRAINED_FROM:
+            producers = UNIT_TRAINED_FROM[unitId]
+            return any(x in race_townhalls[self.race] for x in producers)
+        else:
+            return False
 
     def builtByWorker(self, unitId):
-        producers = UNIT_TRAINED_FROM[unitId]
-        return race_worker[self.race] in producers
-
+        if unitId in UNIT_TRAINED_FROM:
+            producers = UNIT_TRAINED_FROM[unitId]
+            return race_worker[self.race] in producers
+        else:
+            return False
+    
     def checkIfProducerExists(self, unitIdToProduce):
         # result is a pair of two bools
         # first bool: states if the producer exists
         # second bool: states if we can wait and it will be available later
         result = (False, False)
         
-        producers = UNIT_TRAINED_FROM[unitIdToProduce]
+        if unitIdToProduce in UNIT_TRAINED_FROM:
+            producers = UNIT_TRAINED_FROM[unitIdToProduce]
+        elif unitIdToProduce in BASE_BUILDINGS:
+            producers = BASE_BUILDINGS[unitIdToProduce]
+        else:
+            raise Exception("Could not find producers!")
+            
         # check if the thing is produced by a SCV
-        if self.builtByWorker(unitIdToProduce):
+        if type(unitIdToProduce) == UnitTypeId  and self.builtByWorker(unitIdToProduce):
             # find workers
             workers: Units = self.workers.gathering
             if workers:
@@ -316,6 +324,7 @@ class BuildListProcessBot(sc2.BotAI):
         unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
         radius = unitTypeData.footprint_radius
         result = gridPosition
+
         if self.startLocation == StartLocation.BOTTOM_LEFT:
             result = gridPosition.offset((radius, radius))
         elif self.startLocation == StartLocation.BOTTOM_RIGHT:
@@ -327,6 +336,14 @@ class BuildListProcessBot(sc2.BotAI):
         else:
             raise Exception("Start location does not match one of four positions!")
     
+        if unitId in terranAddonBuildings:
+            if self.startLocation == StartLocation.BOTTOM_LEFT:
+                result = result.offset((0.0, 2.0))
+            elif self.startLocation == StartLocation.BOTTOM_RIGHT:
+                result = result.offset((-2.0, 2.0))
+            elif self.startLocation == StartLocation.TOP_RIGHT:
+                result = result.offset((-2.0, 0.0))
+
         return result
 
     # finds an appropriate worker (closest to position or unit)
@@ -793,13 +810,15 @@ class BuildListProcessBot(sc2.BotAI):
         self.checkAndAdvance()
 
         if not self.done:
-
+            
             # next preconditions of the current task are checked
             ok = self.checkPreconditions()
             if ok:
-                #built by worker or trained in building?
+                # if something is built by a worker we need to find a build position
+                # this is handled in the then case of this if
                 if self.builtByWorker(self.currentTask):
 
+                    # special cases: refinery and command centers:
                     if self.currentTask == UnitTypeId.REFINERY: 
                         result = self.buildRefinery()
                         if result:
@@ -810,6 +829,7 @@ class BuildListProcessBot(sc2.BotAI):
                         self.buildBase()
                         self.finishedCurrentTask()
                     else:
+                        # all other buildings are handled here
                         gridPosition: Point2 = self.getNextBuildPositionAndAdvance(self.currentTask)
 
                         buildLocation: Point2 = self.convertGridPositionToCenter(self.currentTask,  gridPosition)
@@ -825,19 +845,54 @@ class BuildListProcessBot(sc2.BotAI):
                             raise Exception("The provided build location is not valid!")
 
                 else:
-                    if self.producedInTownhall(self.currentTask):
-                        self.townhalls.idle[0].train(self.currentTask)
-                        self.finishedCurrentTask()
+                    
+                    # somehow need to find out if its training or building
+
+                    producers = self.getProducers(self.currentTask)
+                    taskInfo: UnitTypeData = self.game_data.units[self.currentTask.value]
+
+                    # what to do next depends on whether the task is a structure or a unit
+                    if IS_STRUCTURE in taskInfo.attributes:
+                        # the task is a structure but one that is not built by an scv
+
+                        logger.info(str(self.currentTask) + " is a structure!")
+                        success = False
+                        for structure in self.structures.idle:
+                            if structure.type_id in producers:
+                                logger.info("found the structure that can built it")
+                                success = structure.build(self.currentTask)
+                                if success:
+                                    self.finishedCurrentTask()
+                                    break
+                                else:
+                                    raise Exception("Could not cast the given ability!")
+                        if not success:
+                            raise Exception("Check preconditions reported that it could be cast but could not be cast!")
                     else:
-                        unitsTrained = self.train(self.currentTask)
-                        if unitsTrained == 0:
-                            logger.info("could not train unit")
-                        else:
+                        logger.info(str(self.currentTask) + " is not a structure!")
+                        if self.producedInTownhall(self.currentTask):
+                            self.townhalls.idle[0].train(self.currentTask)
                             self.finishedCurrentTask()
+                        else:
+                            unitsTrained = self.train(self.currentTask)
+                            if unitsTrained == 0:
+                                logger.info("could not train unit")
+                            else:
+                                self.finishedCurrentTask()
+                    # it is an ability
+
+
+                    # for example building a techlab
+                    # look up in PRODUCED_IN data structure
+
+                        
+                        
+                        
 
             self.myWorkerDistribution()
         else:
             logger.info("Done with build list!")
+            logger.info(str(self.structures))
             
     async def on_start(self):
 
@@ -872,25 +927,26 @@ class BuildListProcessBot(sc2.BotAI):
 
         # fill self.plannedStructureSizes
         for buildTask in self.buildList:
-            unitId: UnitTypeId = self.unitToId(buildTask)
-            logger.info("unitid:" + str(unitId) +  " name: "+ str(buildTask))
-            unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
-            # if the building is a structure we store its footprint size
-            if self.builtByWorker(unitId):
-                
-                # make sure it is not a gas bulilding and not a base building
-                if not unitId in ALL_GAS:
-                    if not unitId in race_townhalls[self.race]:
-                        radius = unitTypeData.footprint_radius
-                        # in case this is a building that might have an addon
-                        if unitId in terranAddonBuildings:
-                            # increase radius by 1 to safe space for possible addons
-                            radius += 1
-                        logger.info("Adding " + str(unitId) + " to structure sizes with radius " + str(radius))
-                        if radius in self.plannedStructureSizes:
-                            self.plannedStructureSizes[radius] += 1
-                        else:
-                            self.plannedStructureSizes[radius] = 1
+            id = self.unitToId(buildTask)
+            logger.info("id:" + str(id) +  " name: "+ str(buildTask))
+            if type(id) == UnitTypeId:
+                unitTypeData: UnitTypeData = self.game_data.units[id.value]
+                # if the building is a structure we store its footprint size
+                if self.builtByWorker(id):
+                    
+                    # make sure it is not a gas bulilding and not a base building
+                    if not id in ALL_GAS:
+                        if not id in race_townhalls[self.race]:
+                            radius = unitTypeData.footprint_radius
+                            # in case this is a building that might have an addon
+                            if id in terranAddonBuildings:
+                                # increase radius by 1 to safe space for possible addons
+                                radius += 1
+                            logger.info("Adding " + str(id) + " to structure sizes with radius " + str(radius))
+                            if radius in self.plannedStructureSizes:
+                                self.plannedStructureSizes[radius] += 1
+                            else:
+                                self.plannedStructureSizes[radius] = 1
 
 
         offsetBetweenCols = Point2((1, 0))
@@ -901,16 +957,27 @@ class BuildListProcessBot(sc2.BotAI):
         if self.startLocation == StartLocation.TOP_RIGHT:
             offsetBetweenCols = Point2((-1, 0))
 
-        # iteration variables
-        currentColStart = self.gridStart
+       
 
+        logger.info("planned structure sizes:")
+        logger.info(str(self.plannedStructureSizes))
+
+        # all the radiuses that need their own col
+        radiuses = []
         for radius, count in self.plannedStructureSizes.items():
-            
             # compute how many cols are necessary
             buildingsPerCol = self.maxColLength // (radius * 2) 
             colsNecessary = math.ceil(count / buildingsPerCol)
 
             self.numberOfCols += colsNecessary
+
+            for i in range(0, colsNecessary):
+                radiuses.append(radius)
+
+        # iteration variables
+        currentColStart = self.gridStart
+
+        for radius in radiuses:
 
             self.colsWidths.append(radius * 2)
 
@@ -937,28 +1004,12 @@ class BuildListProcessBot(sc2.BotAI):
 
 
 
-        
-            
-        
-        
-
-
-
-
-
-
-# TODO: Starport, Factory und Barracks müssen im Grid noch richtig positioniert werden
-# TODO: turn if in unitToId to dict lookup
-
-
-
-
-
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "SupplyDepot", "SCV", "SupplyDepot", "Refinery","SCV", "Barracks", "SCV", "Factory", "SCV", "SCV", "Barracks", "CommandCenter", "Starport", "Marine", "Marine", "Marine", "Marine", "Medivac"]
+buildListInput = ["SCV", "SupplyDepot", "Refinery", "Barracks", "Factory", "SCV", "Starport", "StarportTechLab", "FusionCore", "Battlecruiser"]
 
 run_game(maps.get("Flat128"), [
     Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_ONE), name="PlayerOne"),
-    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
+    #Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
+    Computer(Race.Protoss, Difficulty.Medium)
 ], realtime=True)
