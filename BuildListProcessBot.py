@@ -94,6 +94,11 @@ class BuildListProcessBot(sc2.BotAI):
         BuildListProcessBot.PLAYER_ONE_START_LOCATION: StartLocation = StartLocation.UNKNOWN
         BuildListProcessBot.PLAYER_TWO_START_LOCATION: StartLocation = StartLocation.UNKNOWN
 
+        # attacking
+        self.attacking = False
+        BuildListProcessBot.PLAYER_ONE_DONE = False
+        BuildListProcessBot.PLAYER_TWO_DONE = False
+
 
     def unitToId(self, unitName):
         return CONVERT_TO_ID[unitName]
@@ -359,7 +364,7 @@ class BuildListProcessBot(sc2.BotAI):
     def buildRefinery(self):
         # cant build more gas buildings than townhalls
         # TODO: evaluate this condition
-        if len(self.gas_buildings.ready) + self.already_pending(self.currentTask) < len(self.townhalls) * 2:
+        if len(self.gas_buildings.ready) + self.already_pending(self.currentTask) <= len(self.townhalls) * 2:
             
             # prefer townhalls that are ready
             for townhall in self.townhalls.ready:
@@ -367,6 +372,7 @@ class BuildListProcessBot(sc2.BotAI):
                 vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
                 logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
                 # check all locations
+                # TODO: apparently can_place does not work in this situation. it will say that a second refinery can be placed on the occupied geyser
                 for vespeneGeyser in vespeneGeysers:
                     if self.can_place(self.currentTask, (vespeneGeyser.position)):
                         worker: Unit = self.getWorker(vespeneGeyser)
@@ -879,21 +885,40 @@ class BuildListProcessBot(sc2.BotAI):
                                 logger.info("could not train unit")
                             else:
                                 self.finishedCurrentTask()
-                    # it is an ability
 
-
-                    # for example building a techlab
-                    # look up in PRODUCED_IN data structure
-
-                        
-                        
-                        
-
+            # distribute workers
             self.myWorkerDistribution()
         else:
-            logger.info("Done with build list!")
-            logger.info(str(self.structures))
-            
+
+            if self.player == Player.PLAYER_ONE:
+                if not BuildListProcessBot.PLAYER_ONE_DONE:
+                    if all(structure.is_idle for structure in self.structures):
+                        logger.info("Done with build list!")
+                        BuildListProcessBot.PLAYER_ONE_DONE = True
+                elif BuildListProcessBot.PLAYER_TWO_DONE and not self.attacking:
+                    # attack
+                    logger.info("attacking!")
+                    self.attacking = True
+                    attackPoint = self.game_info.map_center
+                    attackingUnits = self.units.filter(lambda unit: unit.type_id != UnitTypeId.SCV)
+                    for unit in attackingUnits:
+                        unit.attack(attackPoint)
+
+            if self.player == Player.PLAYER_TWO:
+                if not BuildListProcessBot.PLAYER_TWO_DONE:
+                    # make sure all buildings are done
+                    if all(structure.is_idle for structure in self.structures):
+                        logger.info("Done with build list!")
+                        BuildListProcessBot.PLAYER_TWO_DONE = True
+                elif BuildListProcessBot.PLAYER_ONE_DONE and not self.attacking:
+                    # attack
+                    logger.info("attacking!")
+                    self.attacking = True
+                    attackPoint = self.game_info.map_center
+                    attackingUnits = self.units.filter(lambda unit: unit.type_id != UnitTypeId.SCV)
+                    for unit in attackingUnits:
+                        unit.attack(attackPoint)
+                              
     async def on_start(self):
 
         if (self.game_info.player_start_location.x == 24.5):
@@ -1003,13 +1028,15 @@ class BuildListProcessBot(sc2.BotAI):
         logger.info("cols next build points: " + str(self.colsNextBuildPoint))
 
 
+# TODO: sometimes the second Refinery is not built. example build list: ["SCV", "SupplyDepot", "Refinery", "Barracks", "Refinery", "Factory", "SupplyDepot", "SCV", "Starport", "SCV", "StarportTechLab", "FusionCore", "Battlecruiser"]
+
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "SupplyDepot", "Refinery", "Barracks", "Factory", "SCV", "Starport", "StarportTechLab", "FusionCore", "Battlecruiser"]
+buildListInput = ["SCV", "SupplyDepot", "Refinery", "Barracks", "Refinery", "Factory", "SupplyDepot", "SCV", "Starport", "SCV", "StarportTechLab", "FusionCore", "Battlecruiser"]
 
 run_game(maps.get("Flat128"), [
     Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_ONE), name="PlayerOne"),
-    #Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
-    Computer(Race.Protoss, Difficulty.Medium)
+    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
+    #Computer(Race.Protoss, Difficulty.Medium)
 ], realtime=True)
