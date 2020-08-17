@@ -99,6 +99,9 @@ class BuildListProcessBot(sc2.BotAI):
         BuildListProcessBot.PLAYER_ONE_DONE = False
         BuildListProcessBot.PLAYER_TWO_DONE = False
 
+        # gas building locations
+        self.occupiedGeysers = set()
+
 
     def unitToId(self, unitName):
         return CONVERT_TO_ID[unitName]
@@ -361,37 +364,41 @@ class BuildListProcessBot(sc2.BotAI):
         else:
             raise Exception("There are no gathering workers which could be used to build " + self.currentTask)
 
+    def buildRefineryAtTownhall(self, townhall: Unit):
+        # all vespene geysers closer than distance ten to the current townhall
+        vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
+        logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
+        # check all locations
+        # TODO: apparently can_place does not work in this situation. it will say that a second refinery can be placed on the occupied geyser
+        for vespeneGeyser in vespeneGeysers:
+            if vespeneGeyser.position not in self.occupiedGeysers:
+                if self.can_place(self.currentTask, (vespeneGeyser.position)):
+                    worker: Unit = self.getWorker(vespeneGeyser)
+                    worker.build_gas(vespeneGeyser)
+                    self.occupiedGeysers.add(vespeneGeyser.position)
+                    return True
+                else:
+                    logger.warn("Can place stated not possible to place even though according to self.occupiedGeysers it should be free!")
+        
+        # if we reach this we have not found a building location
+        return False
+
     def buildRefinery(self):
         # cant build more gas buildings than townhalls
-        # TODO: evaluate this condition
         if len(self.gas_buildings.ready) + self.already_pending(self.currentTask) <= len(self.townhalls) * 2:
             
             # prefer townhalls that are ready
             for townhall in self.townhalls.ready:
-                # all vespene geysers closer than distance ten to the current townhall
-                vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
-                logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
-                # check all locations
-                # TODO: apparently can_place does not work in this situation. it will say that a second refinery can be placed on the occupied geyser
-                for vespeneGeyser in vespeneGeysers:
-                    if self.can_place(self.currentTask, (vespeneGeyser.position)):
-                        worker: Unit = self.getWorker(vespeneGeyser)
-                        worker.build_gas(vespeneGeyser)
-                        return True
+                return self.buildRefineryAtTownhall(townhall)
             # townhalls that are not ready
             for townhall in self.townhalls.not_ready:
-                # all vespene geysers closer than distance ten to the current townhall
-                vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
-                logger.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
-                # check all locations
-                for vespeneGeyser in vespeneGeysers:
-                    if self.can_place(self.currentTask, (vespeneGeyser.position)):
-                        worker: Unit = self.getWorker(vespeneGeyser)
-                        worker.build_gas(vespeneGeyser)
-                        return True
+                return self.buildRefineryAtTownhall(townhall)
 
         else:
             raise Exception("Per townhall 2 vespene buildings allowed!")
+        
+        # should never reach this
+        return False
 
     def buildBase(self):
         if bool(self.expansionLocations):
@@ -1027,16 +1034,17 @@ class BuildListProcessBot(sc2.BotAI):
         logger.info("colsStarts: " + str(self.colsStarts))
         logger.info("cols next build points: " + str(self.colsNextBuildPoint))
 
-
-# TODO: sometimes the second Refinery is not built. example build list: ["SCV", "SupplyDepot", "Refinery", "Barracks", "Refinery", "Factory", "SupplyDepot", "SCV", "Starport", "SCV", "StarportTechLab", "FusionCore", "Battlecruiser"]
+# TODO: Zerg
+# TODO: Upgrades
 
 
 # starting the bot
 # one enemy just for first testing
-buildListInput = ["SCV", "SupplyDepot", "Refinery", "Barracks", "Refinery", "Factory", "SupplyDepot", "SCV", "Starport", "SCV", "StarportTechLab", "FusionCore", "Battlecruiser"]
+buildListInputOne = ["SCV", "SupplyDepot", "Refinery", "Barracks", "Refinery", "Factory", "SupplyDepot", "SCV", "Starport", "SCV", "StarportTechLab", "FusionCore", "Battlecruiser"]
+buildListInputTwo = ["SCV", "SupplyDepot", "Barracks", "SCV", "Refinery", "Barracks", "SCV", "SupplyDepot", "SCV", "BarracksReactor", "Marine", "Marine", "Marine", "Barracks", "BarracksReactor", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine", "Marine"]
 
 run_game(maps.get("Flat128"), [
-    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_ONE), name="PlayerOne"),
-    Bot(Race.Terran, BuildListProcessBot(buildListInput.copy(), Player.PLAYER_TWO), name="PlayerTwo")
-    #Computer(Race.Protoss, Difficulty.Medium)
+    Bot(Race.Terran, BuildListProcessBot(buildListInputOne.copy(), Player.PLAYER_ONE), name="PlayerOne"),
+    # Bot(Race.Terran, BuildListProcessBot(buildListInputTwo.copy(), Player.PLAYER_TWO), name="PlayerTwo")
+    Computer(Race.Protoss, Difficulty.Medium)
 ], realtime=True)

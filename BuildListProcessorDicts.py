@@ -11,6 +11,7 @@ TERRAN_STRUCTURE_UPGRADES: Dict[AbilityId, Set[UnitTypeId]] = {
 }
 
 CONVERT_TO_ID = {
+    # TERRAN:
     "SCV": UnitTypeId.SCV,
     "SupplyDepot": UnitTypeId.SUPPLYDEPOT,
     "Barracks": UnitTypeId.BARRACKS,
@@ -27,7 +28,31 @@ CONVERT_TO_ID = {
     "StarportTechLab": UnitTypeId.STARPORTTECHLAB,
     "StarportReactor": UnitTypeId.STARPORTREACTOR,
     "Battlecruiser": UnitTypeId.BATTLECRUISER,
-    "FusionCore": UnitTypeId.FUSIONCORE
+    "FusionCore": UnitTypeId.FUSIONCORE,
+    "OrbitalCommand": UnitTypeId.ORBITALCOMMAND,
+    "PlanetaryFortress": UnitTypeId.PLANETARYFORTRESS,
+    "EngineeringBay": UnitTypeId.ENGINEERINGBAY,
+    "MissileTurret": UnitTypeId.MISSILETURRET,
+    "GhostAcademy": UnitTypeId.GHOSTACADEMY,
+    "Reaper": UnitTypeId.REAPER,
+    "Armory": UnitTypeId.ARMORY,
+    "Bunker": UnitTypeId.BUNKER,
+    "Marauder": UnitTypeId.MARAUDER,
+    "SensorTower": UnitTypeId.SENSORTOWER,
+    "SiegeTank": UnitTypeId.SIEGETANK,
+    "Ghost": UnitTypeId.GHOST,
+    "Thor": UnitTypeId.THOR,
+    "WidowMine": UnitTypeId.WIDOWMINE,
+    "Banshee": UnitTypeId.BANSHEE,
+    "Hellion": UnitTypeId.HELLION,
+    "VikingFighter": UnitTypeId.VIKINGFIGHTER,
+    "HellionTank": UnitTypeId.HELLIONTANK,
+    "Cyclone": UnitTypeId.CYCLONE,
+    "Liberator": UnitTypeId.LIBERATOR,
+    "Raven": UnitTypeId.RAVEN,
+
+    # ZERG:
+    "Drone": UnitTypeId.DRONE
 }
 
 BASE_BUILDINGS = {
