@@ -111,7 +111,8 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
                 else:
                     raise Exception("Could not build gas building because there was no build location found!")
             elif self.currentTask == UnitTypeId.HATCHERY:
-                raise Exception("Not implemented yet")
+                BuildListProcessBotBase.buildBase(self)
+                self.finishedCurrentTask()
             else:
 
                 # building location needed
@@ -191,7 +192,7 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
             pass
 
 buildListInputAllStructures = ["Drone", "Drone", "SpawningPool", "Extractor", "EvolutionChamber", "RoachWarren", "Drone", "Drone", "Drone", "Drone", "Extractor", "Lair", "HydraliskDen", "InfestationPit", "LurkerDenMP", "Spire", "Hive", "UltraliskCavern", "GreaterSpire"]
-buildListInputOne = ["Drone", "Drone", "Overlord", "SpawningPool", "Extractor", "Drone", "Drone", "Extractor", "Drone", "Drone", "Overlord", "RoachWarren", "Overlord", "Roach", "Roach", "Roach", "Roach", "Roach"]
+buildListInputOne = ["Drone", "Drone", "Overlord", "SpawningPool", "Hatchery"]
 run_game(maps.get("Flat128"), [
     Bot(Race.Zerg, BuildListProcessBotZerg(buildListInputOne.copy(), Player.PLAYER_ONE), name="PlayerOne"),
     Bot(Race.Zerg, BuildListProcessBotZerg(buildListInputOne.copy(), Player.PLAYER_TWO), name="PlayerTwo")

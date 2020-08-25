@@ -730,6 +730,17 @@ class BuildListProcessBotBase(sc2.BotAI):
             for townhall in self.townhalls.not_ready:
                 return self.buildGasBuildingAtTownhall(townhall)
 
+    def buildBase(self):
+        if bool(self.expansionLocations):
+            location: Point2 = self.expansionLocations.pop(0)
+            worker: Unit = self.workers.gathering.closest_to(location)
+            if self.can_place(self.currentTask, location):
+                worker.build(self.currentTask, location)
+            else:
+                raise Exception("could not build the command center where it was supposed to be built!")
+        else:
+            raise Exception("No more places to build command expansions!")
+
     # Worker Distribution
     # ----------------------------------------
 
