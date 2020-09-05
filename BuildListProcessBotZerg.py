@@ -5,8 +5,6 @@ from BuildListProcessBotBase import (
     race_supplyUnit
 )
 import logging
-from sc2.player import Bot, Computer
-from sc2 import run_game, maps, Race, Difficulty
 from sc2.position import Point2
 from sc2.units import Units
 from sc2.unit import Unit
@@ -67,8 +65,18 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
             unitId: UnitTypeId = self.unitToId(element)
             if unitId in forbiddenBuildings:
                 raise Exception(str(unitId) + " is not allowed for this bot!")
-            
+
+        # TODO: scan build list for double buildings (structures of same type)
+
         self.loggerChild.info("BuildList has no errors.")
+
+    def prepareBuildListCompletedCheck(self):
+        # call base
+        BuildListProcessBotBase.prepareBuildListCompletedCheck(self)
+
+        if UnitTypeId.ZERGLING in self.remainingBuildTasks:
+            self.remainingBuildTasks[UnitTypeId.ZERGLING] = self.remainingBuildTasks[UnitTypeId.ZERGLING] * 2
+            self.loggerChild.info("Modified remaining tasks structure to: " + str(self.remainingBuildTasks))
 
     def raceSpecificUnitAndStructureCreations(self):
         # one overlord is created initially
@@ -76,7 +84,7 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
 
     def raceSpecificUnitCompletedIgnore(self, unit: UnitTypeId):
         # ignore if unit is larva
-        return unit == UnitTypeId.LARVA
+        return unit == UnitTypeId.LARVA 
 
     def raceSpecificStructureCompletedIgnore(self, unit: UnitTypeId):
         # nothing to ignore
@@ -183,18 +191,7 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
     async def on_step(self, iteration: int):
         # base does some more preparation -> only do something if base returns true
         if BuildListProcessBotBase.onStepBase(self, iteration):
-            # TODO: fix for worker not being built problem?
-            # did not fix it
-
             if iteration % 5 == 0:
                 # do business here
                 self.zergOnStep()
             pass
-
-buildListInputAllStructures = ["Drone", "Drone", "SpawningPool", "Extractor", "EvolutionChamber", "RoachWarren", "Drone", "Drone", "Drone", "Drone", "Extractor", "Lair", "HydraliskDen", "InfestationPit", "LurkerDenMP", "Spire", "Hive", "UltraliskCavern", "GreaterSpire"]
-buildListInputOne = ["Drone", "Drone", "Overlord", "SpawningPool", "Hatchery"]
-run_game(maps.get("Flat128"), [
-    Bot(Race.Zerg, BuildListProcessBotZerg(buildListInputOne.copy(), Player.PLAYER_ONE), name="PlayerOne"),
-    Bot(Race.Zerg, BuildListProcessBotZerg(buildListInputOne.copy(), Player.PLAYER_TWO), name="PlayerTwo")
-    #Computer(Race.Protoss, Difficulty.Medium)
-], realtime=True)

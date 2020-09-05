@@ -508,16 +508,16 @@ class BuildListProcessBotBase(sc2.BotAI):
             for structure in self.structures:
                 allStructuresReady = allStructuresReady and structure.is_ready
                 if not structure.is_ready:
-                    self.loggerBase.info(str(structure) + " is not ready")
+                    self.loggerBase.debug(str(structure) + " is not ready")
                 allStructuresIdle = allStructuresIdle and structure.is_idle
                 if not structure.is_idle:
-                    self.loggerBase.info(str(structure) + " is not idle")
+                    self.loggerBase.debug(str(structure) + " is not idle")
         
             allUnitsReady = True
             for unit in self.units:
                 allUnitsReady = allUnitsReady and unit.is_ready
                 if not unit.is_ready:
-                    self.loggerBase.info(str(unit) + " is not ready!")
+                    self.loggerBase.debug(str(unit) + " is not ready!")
             
             if self.race == Race.Zerg:
                 allUnitsReady = self.units.filter(lambda unit: unit.type_id == UnitTypeId.EGG).empty
@@ -535,6 +535,11 @@ class BuildListProcessBotBase(sc2.BotAI):
             if allStructuresReady and allStructuresIdle and allUnitsReady:
                 # the final check of remainingBuildTasks if everything was built
                 for unitId, count in self.remainingBuildTasks.items():
+                    # safety net for terran (and protoss)
+                    if self.already_pending(unitId) > 0:
+                        return False # the building is pending --> worker walking to build etc.
+                    if unitId in BASE_BUILDINGS:
+                        self.loggerBase.info("All units: \n" + str(self.all_units))
                     if count != 0:
                         if unitId == race_worker[self.race]:
                             self.loggerBase.warn("The bot did not produce the correct number of workers. Timings will not be correct but the army strength can still be compared!")
@@ -561,9 +566,12 @@ class BuildListProcessBotBase(sc2.BotAI):
 
     # returns the ids of producers for the current task
     def getProducerIdsForCurrentTask(self):
-        if self.currentTask not in UNIT_TRAINED_FROM:
-            raise Exception("" + str(self.currentTask) + " is not available in UNIT_TRAINED_FROM!")
-        return UNIT_TRAINED_FROM[self.currentTask]
+        if self.currentTask in UNIT_TRAINED_FROM:
+            return UNIT_TRAINED_FROM[self.currentTask]
+        elif self.currentTask in BASE_BUILDINGS:
+            return BASE_BUILDINGS[self.currentTask]
+        else:
+            raise Exception("" + str(self.currentTask) + " is not available in UNIT_TRAINED_FROM and not in BASE_BUILDINGS (only terran)!")
 
     # returns actual units of producers for the current task
     def getProducerUnitsForCurrentTask(self):
@@ -579,8 +587,8 @@ class BuildListProcessBotBase(sc2.BotAI):
 
     def checkIfProducerExists(self):
         result = (False, False)
-        
-        producersAvailable = self.getProducerUnitsForCurrentTask()
+        producersAvailable: Units = self.getProducerUnitsForCurrentTask()
+        producersAvailable = producersAvailable.ready
         if not producersAvailable.empty:
             # is any of these available producers idle
             if any(producer.is_idle or producer.is_gathering for producer in producersAvailable):
@@ -593,7 +601,7 @@ class BuildListProcessBotBase(sc2.BotAI):
             if any(self.already_pending(producerId) > 0.0 for producerId in producerIds):
                 result = (False, True)
             # for zerg producer might be larva. already_pending will not account for that
-            # as long as we have a least one Hatcher/Lair/Hive
+            # as long as we have a least one Hatchery/Lair/Hive
             if (not result[1]) and self.race == Race.Zerg and UnitTypeId.LARVA in producerIds and len(self.townhalls) > 0:
                 result = (False, True)
 
