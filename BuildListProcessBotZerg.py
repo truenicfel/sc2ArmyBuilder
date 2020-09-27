@@ -84,7 +84,7 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
 
     def raceSpecificUnitCompletedIgnore(self, unit: UnitTypeId):
         # ignore if unit is larva
-        return unit == UnitTypeId.LARVA 
+        return unit == UnitTypeId.LARVA or unit == UnitTypeId.EGG
 
     def raceSpecificStructureCompletedIgnore(self, unit: UnitTypeId):
         # nothing to ignore

@@ -917,7 +917,7 @@ class BuildListProcessBotBase(sc2.BotAI):
                 BuildListProcessBotBase.PLAYER_TWO_READY_TO_ATTACK = True
             self.attacking = True
 
-        if BuildListProcessBotBase.PLAYER_TWO_READY_TO_ATTACK and BuildListProcessBotBase.PLAYER_TWO_READY_TO_ATTACK and not self.attackDone:
+        if BuildListProcessBotBase.PLAYER_TWO_READY_TO_ATTACK and BuildListProcessBotBase.PLAYER_ONE_READY_TO_ATTACK and not self.attackDone:
             self.loggerBase.info("Attacking the map center with all available units!")
             self.attackMapCenterWithArmy()
             self.attackDone = True
@@ -931,7 +931,7 @@ class BuildListProcessBotBase(sc2.BotAI):
         if self.player == Player.PLAYER_ONE and (BuildListProcessBotBase.PLAYER_ONE_ARMY_COUNT == 0 or BuildListProcessBotBase.PLAYER_TWO_ARMY_COUNT == 0):
             if BuildListProcessBotBase.PLAYER_ONE_ARMY_COUNT == 0 and BuildListProcessBotBase.PLAYER_TWO_ARMY_COUNT == 0:
                 self.loggerBase.info("Its a tie!")
-            elif BuildListProcessBotBase.PLAYER_TWO_ARMY_COUNT == 0:
+            elif BuildListProcessBotBase.PLAYER_ONE_ARMY_COUNT == 0:
                 self.loggerBase.info("Player two won the match!")
                 BuildListProcessBotBase.WINNER = Winner.PLAYER_TWO
             else:
@@ -941,9 +941,13 @@ class BuildListProcessBotBase(sc2.BotAI):
         if BuildListProcessBotBase.WINNER != Winner.UNKNOWN:
             if self.player == Player.PLAYER_ONE and BuildListProcessBotBase.WINNER == Winner.PLAYER_TWO:
                 self.loggerBase.info("Player one should surrender now!")
+                #self.client.leave()
+                raise Exception("Player one lost the game and surrendered!")
             
             if self.player == Player.PLAYER_TWO and BuildListProcessBotBase.WINNER == Winner.PLAYER_ONE:
                 self.loggerBase.info("Player two should surrender now!")
+                #self.client.leave()
+                raise Exception("Player two lost the game and surrendered!")
             
 
         
