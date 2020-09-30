@@ -26,11 +26,18 @@ terranFullAddonBuildings = {UnitTypeId.BARRACKSREACTOR, UnitTypeId.BARRACKSTECHL
 
 
 class BuildListProcessBotTerran(BuildListProcessBotBase):
+    """Implements BuildListProcessBotBase for Terran.
 
+    This also implements a build grid specifically taylored to terran
+    buildings (takes addons into account).
+    """
     # Init
     # ----------------------------------------
 
     def __init__(self, inputBuildList, player: Player):
+        """Initializes bot (see BuildListProcessBotBase).
+        """
+
         # base class
         BuildListProcessBotBase.__init__(self, inputBuildList, player)
         self.gridStart: Point2 = Point2()
@@ -78,6 +85,10 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
     # ----------------------------------------
 
     def getNextBuildPositionAndAdvance(self, unitId):
+        """Build grid: Returns a build position and advances the grid.
+
+        Needs unit id to know the size of the building.
+        """
         unitTypeData: UnitTypeData = self.game_data.units[unitId.value]
         radius = unitTypeData.footprint_radius
         
@@ -97,6 +108,10 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
         raise Exception("No more build slots left!")
 
     def convertGridPositionToCenter(self, unitId: UnitTypeId, gridPosition: Point2):
+        """Build grid: Converts the grid position to the actual build position.
+        """
+
+
         # get radius
         # important: only take actual size of building into account.
         # for a factory we  will not use the adapted size with an addon attached
@@ -126,11 +141,14 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
         return result
 
     def colHasSpaceLeft(self, index):
+        """Build grid: Check if a column has space left to build another building.
+        """
         width = self.colsWidths[index]
         spaceLeft = abs(self.colStop.y - self.colsNextBuildPoint[index].y)
         return spaceLeft >= width
 
     def advanceColsBuildPosition(self, index):
+        """Build grid: Advances the build position within a column."""
         if self.startLocation == StartLocation.TOP_LEFT or self.startLocation == StartLocation.TOP_RIGHT:
             # from top to bottom: -
             self.colsNextBuildPoint[index] = self.colsNextBuildPoint[index].offset((0, -self.colsWidths[index]))
@@ -142,19 +160,27 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
     # ----------------------------------------   
 
     def raceSpecificUnitAndStructureCreations(self):
+        """Nothing to do for terran here."""
         pass
 
     def raceSpecificUnitCompletedIgnore(self, unit: UnitTypeId):
+        """Nothing to do for terran here."""
         return False
 
     def raceSpecificStructureCompletedIgnore(self, unit: UnitTypeId):
-        # nothing to ignore
+        """Nothing to do here."""
         return False
 
     # Running
     # ----------------------------------------
 
     async def on_step(self, iteration: int):
+        """Called on each game step.
+        
+        Required by library. Slowed down as the fast steps caused errors. Requires
+        further evaluation to find a way of slowing down using library tools.
+        """
+
         # base does some more preparation -> only do something if base returns true
         if BuildListProcessBotBase.onStepBase(self, iteration):
             if iteration % 5 == 0:
@@ -163,6 +189,12 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
             pass
 
     def terranOnStep(self):
+        """Called in on_step.
+
+        Checks if task preconditions are fulfilled and then builds it.
+        """
+
+
         # checking preconditions...
         # checks:
         #   - can afford (supply, minerals, vespene)
@@ -242,6 +274,10 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
     # ----------------------------------------
 
     async def on_start(self):
+        """ Called once before starting.
+
+        Required by library. Sets up grid additionally to setup done in base.
+        """
 
         # call base to handle enemy location
         BuildListProcessBotBase.onStartBase(self)
@@ -343,6 +379,8 @@ class BuildListProcessBotTerran(BuildListProcessBotBase):
     # ----------------------------------------
 
     def attackMapCenterWithArmy(self):
+        """ Attack map center with all units except scvs.
+        """
         attackPoint = self.game_info.map_center
         army: Units = self.units.filter(lambda unit: not (unit.type_id == UnitTypeId.SCV))
         for unit in army:

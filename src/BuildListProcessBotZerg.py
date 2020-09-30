@@ -19,12 +19,20 @@ from BuildListProcessorDicts import ZERG_BUILD_LOCATIONS
 # Class
 # ----------------------------------------
 
+"""Zerg implementation.
+
+Zerg has static build location and certain forbidden 
+buildings (spine crawler etc.).
+"""
 class BuildListProcessBotZerg(BuildListProcessBotBase):
 
     # Constructor
     # ----------------------------------------
 
     def __init__(self, inputBuildList, player: Player):
+        """Initializes bot.
+        """
+
         # base class
         BuildListProcessBotBase.__init__(self, inputBuildList, player)
         # logger
@@ -35,10 +43,12 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
     # Startup preparation
     # ----------------------------------------
 
-    # startup routine. Should prepare:
-    #   - enemy location
-    #   - build postitions for buildings
     async def on_start(self):
+        """Executed once at the start.
+
+        Required by library. Calls base to do setup.
+        """
+
         # call base to handle enemy location
         BuildListProcessBotBase.onStartBase(self)
         self.lastBuildLocation = self.game_info.player_start_location
@@ -53,6 +63,11 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
         return
 
     def scanBuildList(self):
+        """Additional build list scanning.
+
+        Scans for forbidden buildings.
+        """
+
         # call base
         BuildListProcessBotBase.scanBuildList(self)
         # scan build list for spore crawler, nydus network or spine crawler
@@ -71,6 +86,11 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
         self.loggerChild.info("BuildList has no errors.")
 
     def prepareBuildListCompletedCheck(self):
+        """Additonal buildings for the buildlist completed check.
+
+        The number of zerglings must be doubled as there is always two 
+        produced for every Zergling in the task list.
+        """
         # call base
         BuildListProcessBotBase.prepareBuildListCompletedCheck(self)
 
@@ -79,21 +99,26 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
             self.loggerChild.info("Modified remaining tasks structure to: " + str(self.remainingBuildTasks))
 
     def raceSpecificUnitAndStructureCreations(self):
-        # one overlord is created initially
+        """One overlord is created initially.
+        """
         self.remainingBuildTasks[UnitTypeId.OVERLORD] = 1
 
     def raceSpecificUnitCompletedIgnore(self, unit: UnitTypeId):
-        # ignore if unit is larva
+        """Ignore if unit is larva or egg."""
         return unit == UnitTypeId.LARVA or unit == UnitTypeId.EGG
 
     def raceSpecificStructureCompletedIgnore(self, unit: UnitTypeId):
-        # nothing to ignore
+        """Nothing to ignore."""
         return False
 
     # Build Locations
     # ----------------------------------------
 
     def getBuildLocationForCurrentTask(self):
+        """ Lookup the build location for zerg buildings.
+
+        Build location is static as zerg needs creep to place buildings.
+        """
         return ZERG_BUILD_LOCATIONS[self.currentTask][self.startLocation]
 
     # Building
@@ -101,9 +126,13 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
 
     def buildStructure(self):
         
-        # structures for zerg can either be morphed from drones or from existing buildings
-        # if its morphed from a drone we need a building location otherwise not
-        # special cases for building locations: hatchery and extractor
+
+        """Build a structure.
+        
+        structures for zerg can either be morphed from drones or from existing buildings
+        if its morphed from a drone we need a building location otherwise not
+        special cases for building locations: hatchery and extractor
+        """
 
         # get producers and producer ids first
         producers: Units = self.getProducerUnitsForCurrentTask()
@@ -142,8 +171,11 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
                 self.loggerChild.info("Even though all preconditions were fulfilled " + str(self.currentTask) + " could not be built!")
 
     def trainUnit(self):
-        # need no building location just produce a unit from the producer
-        # get the producers
+        """Train a unit.
+
+        need no building location just produce a unit from the producer
+        get the producers
+        """
         possibleProducers: Units = self.getProducerUnitsForCurrentTask()
         producers: Units = possibleProducers.idle + possibleProducers.gathering
         if producers:
@@ -161,12 +193,20 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
     # ----------------------------------------
 
     def attackMapCenterWithArmy(self):
+        """Attack the map center.
+
+        All units except overlords, drones and larva participate in the attack.
+        """
         attackPoint = self.game_info.map_center
         army: Units = self.units.filter(lambda unit: not (unit.type_id == UnitTypeId.DRONE or unit.type_id == UnitTypeId.OVERLORD or unit.type_id == UnitTypeId.LARVA))
         for unit in army:
             unit.attack(attackPoint)
 
     def zergOnStep(self):
+        """Called in on_step.
+
+        Checks if task preconditions are fulfilled and then builds it.
+        """
 
         # checking preconditions...
         # checks:
@@ -189,6 +229,11 @@ class BuildListProcessBotZerg(BuildListProcessBotBase):
                 self.trainUnit()
 
     async def on_step(self, iteration: int):
+        """Called on each game step.
+        
+        Required by library. Slowed down as the fast steps caused errors. Requires
+        further evaluation to find a way of slowing down using library tools.
+        """
         # base does some more preparation -> only do something if base returns true
         if BuildListProcessBotBase.onStepBase(self, iteration):
             if iteration % 5 == 0:

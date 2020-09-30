@@ -1,8 +1,8 @@
 import logging
 import math
-
 from typing import Union, Dict, Set
 from enum import Enum
+import threading
 
 import sc2
 from sc2 import run_game, maps, Race, Difficulty
@@ -27,23 +27,22 @@ from sc2.constants import (
     EQUIVALENTS_FOR_TECH_PROGRESS,
     ALL_GAS
 )
-
 from BuildListProcessorDicts import (
     BASE_BUILDINGS,
     CONVERT_TO_ID,
     StartLocation
 )
 
-import threading
-
 # Definitions
 # ----------------------------------------
+
 
 race_supplyUnit: Dict[Race, UnitTypeId] = {
     Race.Protoss: UnitTypeId.PYLON,
     Race.Terran: UnitTypeId.SUPPLYDEPOT,
     Race.Zerg: UnitTypeId.OVERLORD,
 }
+
 
 raceBasicTownhall = {
     Race.Terran: UnitTypeId.COMMANDCENTER,
@@ -52,10 +51,14 @@ raceBasicTownhall = {
 }
 
 class Player(Enum):
+    """A way of differentiating players.
+    """
     PLAYER_ONE = 1,
     PLAYER_TWO = 2,
 
 class Winner(Enum):
+    """A way of differentiating winners.
+    """
     PLAYER_ONE = 1,
     PLAYER_TWO = 2,
     UNKNOWN = 3
@@ -64,11 +67,24 @@ class Winner(Enum):
 # ----------------------------------------
 
 class BuildListProcessBotBase(sc2.BotAI):
+    """ Base Class for different race specific bots.
+
+    Combines functionality for clean race specific implementations. It
+    combines buildlist processing capability and precondition checking. 
+    There is a lot more functionality in here to ease implementation.
+    """
 
     # Constructor
     # ----------------------------------------
 
     def __init__(self, inputBuildList, player: Player):
+        """Initialize the bot.
+        
+        Provide a buildlist as a list of build tasks. Strings must be
+        written as in CONVERT_TO_ID from BuildListProcessorDicts.py.
+
+        Player param must be either player one or player two.
+        """
         # player as string
         self.playerString = "UNKNOWN"
         if player == Player.PLAYER_ONE:
@@ -121,6 +137,11 @@ class BuildListProcessBotBase(sc2.BotAI):
     # ----------------------------------------
     
     def setSelfStartLocation(self):
+        """Derive start location from coordinates.
+
+        Sets the bots start location (enum StartLocation in BuildListProcesserDicts.py)
+        based on the start location coordinates.
+        """
         if (self.game_info.player_start_location.x == 24.5):
             # left side of map
             if (self.game_info.player_start_location.y == 22.5):
@@ -142,6 +163,8 @@ class BuildListProcessBotBase(sc2.BotAI):
             BuildListProcessBotBase.PLAYER_TWO_START_LOCATION = self.startLocation
 
     def getCorrespondingStartLocation(self, point: Point2):
+        """For a point get the start location.
+        """
         if (point[0] == 24.5):
             # left side of map
             if (point[1] == 22.5):
@@ -156,6 +179,10 @@ class BuildListProcessBotBase(sc2.BotAI):
                 return StartLocation.TOP_RIGHT
 
     def getLocationFromStartLocation(self, startLocation: StartLocation):
+        """Return the coordinates for a start location.
+        
+        Counterpart to getCorrespondingStartLocation().
+        """
         if startLocation == StartLocation.BOTTOM_LEFT:
             return Point2((24.5, 22.5))
         if startLocation == StartLocation.BOTTOM_RIGHT:
@@ -167,9 +194,14 @@ class BuildListProcessBotBase(sc2.BotAI):
         raise Exception("Location is not a start location! " + str(startLocation))
 
     def findNextExpansion(self, current: Point2, ccwDirection: bool):
-        # first need to check if current is one of the start locations
-        # "corners of map"
+        """Get the next expansion in a certain direction.
+
+        Only works on simple map. This is used in determining the expansions for
+        each bot on the map.
+        """
         if current in self.game_info.start_locations + [self.game_info.player_start_location]:
+            # first need to check if current is one of the start locations
+            # "corners of map"
             correspondingStartLocation = self.getCorrespondingStartLocation(current)
             if (correspondingStartLocation == StartLocation.UNKNOWN):
                 raise Exception("Could not find start location for " + str(current))
@@ -222,6 +254,10 @@ class BuildListProcessBotBase(sc2.BotAI):
                     return self.leftExpansions[index+1]
 
     def computeExpansionLocations(self):
+        """Computes expansion locations.
+        
+        Only works on simple map. This is used in determining the expansions for
+        each bot on the map."""
         possibleExpansionLocations = set()
 
         # add all expansions including player start locations to the set
@@ -391,7 +427,11 @@ class BuildListProcessBotBase(sc2.BotAI):
         return
 
     def fillExpansionLocations(self):
-        
+        """Wrapper for calling computeExpansionLocations() and doing some logging.
+
+        Only works on simple map. This is used in determining the expansions for
+        each bot on the map.
+        """
         assert(BuildListProcessBotBase.PLAYER_TWO_START_LOCATION != StartLocation.UNKNOWN)
         assert(BuildListProcessBotBase.PLAYER_ONE_START_LOCATION != StartLocation.UNKNOWN)
         # compute expansions
@@ -399,11 +439,14 @@ class BuildListProcessBotBase(sc2.BotAI):
         self.computeExpansionLocations()
         self.loggerBase.info("Player one expansion locations: " + str(BuildListProcessBotBase.PLAYER_ONE_EXPANSION_LOCATIONS))
         self.loggerBase.info("Player two expansion locations: " + str(BuildListProcessBotBase.PLAYER_TWO_EXPANSION_LOCATIONS))
-
-    # startup routine. Should prepare:
-    #   - enemy location
-    # and scan the buildlist
+    
     def onStartBase(self):
+        """ Call this from implementing bot in on_start().
+
+        startup routine. Should prepare:
+           - enemy location 
+           - scan the buildlist
+        """
         self.setSelfStartLocation()
         self.loggerBase.info("Available start locations: " + str(self.game_info.start_locations))
         self.scanBuildList()
@@ -413,6 +456,9 @@ class BuildListProcessBotBase(sc2.BotAI):
     # ----------------------------------------
 
     def checkAndAdvance(self):
+        """ Checks buildlist progress and advances it.
+        """
+
         if not self.done:
             if self.currentTask == UnitTypeId.NOTAUNIT:
                 if len(self.buildList) > 0:
@@ -424,15 +470,19 @@ class BuildListProcessBotBase(sc2.BotAI):
                     self.done = True
 
     def finishedCurrentTask(self):
+        """ Advance buildlist by one task.
+        """
         self.loggerBase.info("Finished task: " + str(self.currentTask))
         self.currentTask = UnitTypeId.NOTAUNIT
 
-    # preprocess of buildlist. checks:
-    #   - number of expansions must be smaller or equal to seven
-    #   - number of gas buildings must be smaller or equal to 2*(numberOfExpansions+1)
-    #   - everything in buildlist is known to the bot
     def scanBuildList(self):
+        """ Preprocess/check of buildlist.
 
+        Checks: 
+        - number of expansions must be smaller or equal to seven
+        - number of gas buildings must be smaller or equal to 2*(numberOfExpansions+1)
+        - everything in buildlist is known to the bot
+        """
         buildListCopy = self.buildList.copy()
 
         expansionCount: int = 0
@@ -459,6 +509,8 @@ class BuildListProcessBotBase(sc2.BotAI):
         self.loggerBase.info("BuildList has no errors.")
 
     def prepareBuildListCompletedCheck(self):
+        """Setup check when buildlist is completed that everything was built.
+        """
         self.remainingBuildTasks[race_worker[self.race]] = 12
         self.remainingBuildTasks[raceBasicTownhall[self.race]] = 1
         self.raceSpecificUnitAndStructureCreations()
@@ -472,33 +524,45 @@ class BuildListProcessBotBase(sc2.BotAI):
                 self.remainingBuildTasks[unitId] = 1
         self.loggerBase.info("Created remaining build tasks data structure: " + str(self.remainingBuildTasks))
 
-    # this has to be implemented by a child class to avoid counting initial units 
-    # (automatically given at the start of the game) as units that were created
-    # use self.remainingBuildTasks to include them
-    # an example for workers is given in self.prepareBuildListCompletedCheck()
     def raceSpecificUnitAndStructureCreations(self):
+        """ Add certain unit creations to build list completed check.
+
+        Thhis has to be implemented by a child class to avoid counting initial units 
+        (automatically given at the start of the game) as units that were created
+        use self.remainingBuildTasks to include them
+        an example for workers is given in self.prepareBuildListCompletedCheck()
+        """
         raise Exception("Has to be implemented by race specific class!")
 
     async def on_building_construction_complete(self, unit: Unit):
+        """When building is completed store that for later checks.
+        """
         if not self.raceSpecificStructureCompletedIgnore(unit.type_id):
             self.loggerBase.info("Structure " + str(unit.type_id) + " completed!")
             self.remainingBuildTasks[unit.type_id] -= 1
 
     async def on_unit_created(self, unit: Unit):
+        """When unit is created store that for later checks.
+        """
         if not self.raceSpecificUnitCompletedIgnore(unit.type_id):
             self.loggerBase.info("Unit " + str(unit.type_id) + " completed!")
             self.remainingBuildTasks[unit.type_id] -= 1
 
     def raceSpecificStructureCompletedIgnore(self, unit: UnitTypeId):
+        """Some structures need to be ignored by races."""
         raise Exception("Has to be implemented by race specific bot!")
 
     def raceSpecificUnitCompletedIgnore(self, unit: UnitTypeId):
+        """Some units need to be ignored by races."""
         raise Exception("Has to be implemented by race specific bot!")
 
-    # this does not check if the list of build tasks is empty but it checks
-    # if all buildings are ready and idle and if all remaining build tasks
-    # have been completed
     def checkBuildListCompleted(self):
+        """Post buildlist completed check.
+
+        This does not check if the list of build tasks is empty but it checks
+        if all buildings are ready and idle and if all remaining build tasks
+        have been completed
+        """
         
         if self.done:
 
@@ -560,12 +624,16 @@ class BuildListProcessBotBase(sc2.BotAI):
     # ----------------------------------------
     
     def unitToId(self, unitName):
+        """Convert unit name to id.
+        """
         if unitName not in CONVERT_TO_ID:
             raise Exception(unitName + " is not available in CONVERT_TO_ID!")
         return CONVERT_TO_ID[unitName]
 
     # returns the ids of producers for the current task
     def getProducerIdsForCurrentTask(self):
+        """Get producer ids for current task.
+        """
         if self.currentTask in UNIT_TRAINED_FROM:
             return UNIT_TRAINED_FROM[self.currentTask]
         elif self.currentTask in BASE_BUILDINGS:
@@ -575,17 +643,28 @@ class BuildListProcessBotBase(sc2.BotAI):
 
     # returns actual units of producers for the current task
     def getProducerUnitsForCurrentTask(self):
+        """Get the units (actual units in the game) that could produce the current task.
+
+        Does not check if these units are busy.
+        """
         producerIds: Set[UnitTypeId] = self.getProducerIdsForCurrentTask()
         return (self.units + self.structures).filter(lambda unit: unit.type_id in producerIds)
 
     # returns true if the given unit id is a worker of the currently played race
     def isWorker(self, unitId: UnitTypeId):
+        """Checks if a certain unit is a worker.
+        """
         return race_worker[self.race] == unitId
 
     # Building/Training Conditions
     # ----------------------------------------
 
     def checkIfProducerExists(self):
+        """Check if a producer for the current task exists.
+        
+        returns a pair of bools stating if a producer is currently available and
+        if we can wait such that it becomes available.
+        """
         result = (False, False)
         producersAvailable: Units = self.getProducerUnitsForCurrentTask()
         producersAvailable = producersAvailable.ready
@@ -608,6 +687,11 @@ class BuildListProcessBotBase(sc2.BotAI):
         return result
 
     def checkCosts(self):
+        """Check if the current task is affordable.
+        
+        returns a pair of bools stating if the task is currently affordable and
+        if we can wait such that it becomes affordable.
+        """
         cost = self.calculate_cost(self.currentTask)
 
         # TODO: the check here (self.workers.gathering > 0) does not work for terran and protoss
@@ -648,6 +732,12 @@ class BuildListProcessBotBase(sc2.BotAI):
         return (minerals[0] and vespene[0] and supply[0], minerals[1] and vespene[1] and supply[1])
 
     def checkIfTechRequirementFulfilled(self):
+        """Check if the tech requirement for the current task is fulfilled.
+        
+        returns a pair of bools stating if the requirement is currently fulfilled and
+        if we can wait such that it becomes fulfilled.
+        """
+
         race_dict = {
             Race.Protoss: PROTOSS_TECH_REQUIREMENT,
             Race.Terran: TERRAN_TECH_REQUIREMENT,
@@ -678,6 +768,10 @@ class BuildListProcessBotBase(sc2.BotAI):
         return (fulfilled, waitingHelps)
 
     def checkPreconditions(self):
+        """Combine producer, cost and tech requirement check.
+        
+        returns a bool if the current task can be built right now.
+        """
         # check if the producer exists or is under construction and if the producer is idle
         producerExists, canWaitProducer = self.checkIfProducerExists()
         if not producerExists and not canWaitProducer:
@@ -700,6 +794,8 @@ class BuildListProcessBotBase(sc2.BotAI):
     # Building
     # ----------------------------------------
     def getWorker(self, position: Union[Unit, Point2, Point3]):
+        """Get a worker closest to a certain point on the map.
+        """
         workersGathering: Units = self.workers.gathering
 
         if workersGathering:
@@ -709,11 +805,16 @@ class BuildListProcessBotBase(sc2.BotAI):
             raise Exception("There are no gathering workers which could be used to build " + self.currentTask)
 
     def buildGasBuildingAtTownhall(self, townhall: Unit):
+        """Build gas building at a certain townhall.
+        
+        Needs storage for occupied geysers as library function can_place does not
+        work in that case.
+        """
         # all vespene geysers closer than distance ten to the current townhall
         vespeneGeysers: Units  = self.vespene_geyser.closer_than(10, townhall)
         self.loggerBase.info("Found " + str(len(vespeneGeysers)) + " vespene geyser locations!")
         # check all locations
-        # TODO: apparently can_place does not work in this situation. it will say that a second refinery can be placed on the occupied geyser
+        #  apparently can_place does not work in this situation. it will say that a second refinery can be placed on the occupied geyser
         for vespeneGeyser in vespeneGeysers:
             if vespeneGeyser.position not in self.occupiedGeysers:
                 if self.can_place(self.currentTask, (vespeneGeyser.position)):
@@ -728,6 +829,8 @@ class BuildListProcessBotBase(sc2.BotAI):
         return False
 
     def buildGasBuilding(self):
+        """Build a gas building by selecting a townhall.
+        """
         # cant build more gas buildings than townhalls
         if len(self.gas_buildings.ready) + self.already_pending(self.currentTask) <= len(self.townhalls) * 2:
             
@@ -739,6 +842,10 @@ class BuildListProcessBotBase(sc2.BotAI):
                 return self.buildGasBuildingAtTownhall(townhall)
 
     def buildBase(self):
+        """Build base.
+        
+        Uses the pre computed expansion locations. Only works for simple map.
+        """
         if bool(self.expansionLocations):
             location: Point2 = self.expansionLocations.pop(0)
             worker: Unit = self.workers.gathering.closest_to(location)
@@ -753,9 +860,14 @@ class BuildListProcessBotBase(sc2.BotAI):
     # ----------------------------------------
 
     def myWorkerDistribution(self):
+        """Redistributes workers to geysers and mineral fields.
+        
+        Redistributes:
+            - idle workers
+            - surplus on townhalls/geysers
 
-        # Shamelessly stolen from and modified: https://github.com/BurnySc2/python-sc2/blob/develop/examples/terran/mass_reaper.py
-        # ---------------------------------------------
+        Taken from https://github.com/BurnySc2/python-sc2/blob/develop/examples/terran/mass_reaper.py and modified.
+        """
 
         mineralTags = [x.tag for x in self.mineral_field]
         gas_buildingTags = [x.tag for x in self.gas_buildings]
@@ -885,6 +997,10 @@ class BuildListProcessBotBase(sc2.BotAI):
     # ----------------------------------------
 
     def attackMapCenterWithArmy(self):
+        """ Has to be implemented by race specific bot.
+
+        Gather bots army and then move to map center with attack move.
+        """
         raise Exception("Must be implemented by race specific Bot!")
 
     # Run
@@ -893,6 +1009,10 @@ class BuildListProcessBotBase(sc2.BotAI):
     # finishes preprocessing:
     #   - compute expansion locations
     def onStepBase(self, iteration: int):
+        """ Neeeds to be called from race specific bot.
+
+        Finishes the preprocessing that could not be done in on_start.
+        """
         if not self.expansionLocationsComputed:
             # player one will compute for both
             if self.player == Player.PLAYER_ONE:
